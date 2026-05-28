@@ -1,8 +1,8 @@
 #!/usr/bin/env tsx
-import { db } from "../src/db.js";
-import { migrate } from "../src/schema.js";
-import { ingestGithub } from "../src/github.js";
-import { env } from "../src/env.js";
+import { db } from "../src/db";
+import { migrate } from "../src/schema";
+import { ingestGithub } from "../src/github";
+import { env } from "../src/env";
 
 type Channel = "github" | "twitter" | "all";
 
@@ -54,7 +54,7 @@ async function main() {
     try {
       const r = await ingestGithub(client, { days });
       console.log(
-        `[ingest] github: login=${r.login} total=${r.total} days=${r.days_upserted}`
+        `[ingest] github: login=${r.login} total=${r.total} days=${r.days_processed}`
       );
     } catch (e) {
       console.error(`[ingest] github FAILED:`, (e as Error).message);

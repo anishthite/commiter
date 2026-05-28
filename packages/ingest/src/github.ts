@@ -1,5 +1,5 @@
 import type { Client } from "@libsql/client";
-import { env, requireGithubToken } from "./env.js";
+import { env, requireGithubToken } from "./env";
 
 /**
  * GitHub GraphQL `contributionsCollection` ingestor.
@@ -53,7 +53,8 @@ export type GithubIngestResult = {
   from: string;
   to: string;
   total: number;
-  days_upserted: number;
+  /** Number of day-row upsert statements executed (not affected-row count). */
+  days_processed: number;
 };
 
 export async function ingestGithub(
@@ -134,6 +135,6 @@ export async function ingestGithub(
     from: from.slice(0, 10),
     to: to.slice(0, 10),
     total: cal.totalContributions,
-    days_upserted: count,
+    days_processed: count,
   };
 }

@@ -1,4 +1,4 @@
-import type { Day } from "ingest/src/streak.js";
+import type { Day } from "ingest/src/streak";
 import { intensity, toWeeksGrid } from "@/lib/heatmap";
 
 /**

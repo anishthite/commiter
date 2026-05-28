@@ -1,8 +1,8 @@
 import "server-only";
-import { db } from "ingest/src/db.js";
-import { migrate } from "ingest/src/schema.js";
-import { buildSnapshot, type Snapshot } from "ingest/src/snapshot.js";
-import { env } from "ingest/src/env.js";
+import { db } from "ingest/src/db";
+import { migrate } from "ingest/src/schema";
+import { buildSnapshot, type Snapshot } from "ingest/src/snapshot";
+import { env } from "ingest/src/env";
 
 let migrated = false;
 

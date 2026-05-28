@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
-import { db } from "../src/db.js";
-import { migrate } from "../src/schema.js";
-import { env } from "../src/env.js";
+import { db } from "../src/db";
+import { migrate } from "../src/schema";
+import { env } from "../src/env";
 
 async function main() {
   console.log(`[migrate] DATABASE_URL=${env.DATABASE_URL}`);

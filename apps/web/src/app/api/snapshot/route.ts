@@ -15,7 +15,9 @@ export async function GET(req: Request) {
       headers: { "cache-control": "no-store" },
     });
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ error: message }, { status: 500 });
+    // Log the full error server-side; never echo it to the client —
+    // raw errors can include DB URLs, file paths, or PAT-related strings.
+    console.error("[snapshot] error", e);
+    return NextResponse.json({ error: "snapshot_failed" }, { status: 500 });
   }
 }

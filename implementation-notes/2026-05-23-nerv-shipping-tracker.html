@@ -233,6 +233,41 @@
 <tr><td>A-012</td><td>Heatmap day-of-week alignment uses UTC weekday for the start date — close enough at 365-day scale and dodges DST. If we later want true LA-local weekday alignment, switch to <code>Intl.DateTimeFormat</code> with <code>weekday</code>.</td></tr>
 </table>
 
+<h2>Phase 1 review fixes — 2026-05-28</h2>
+<p>Three parallel reviewers (correctness, simplicity, deploy-readiness) wrote findings to <code>/tmp/phase1-review-{correctness,simplicity,deploy}.md</code>. Approved scope: cheap-cluster fixes only (#1, #2, #3, #6, #7, #8). Auth gate (#4), Vercel <code>outputFileTracingRoot</code> (#5), and migration transactions (#9) deferred.</p>
+
+<p><strong>Net diff:</strong> 13 files changed, +41/−36 LOC. One commit. All validation steps passed.</p>
+
+<h3>Deviations from Phase 1 design</h3>
+<table>
+<tr><th>ID</th><th>Source finding</th><th>Change</th><th>LOC</th></tr>
+<tr><td>X-001</td><td>Correctness §1.1 (SHOULD-FIX)</td><td><code>fillMissingDays</code> now throws when <code>to &lt; from</code> instead of silently fabricating 800 entries via the safety-cap loop. String compare on <code>'YYYY-MM-DD'</code>.</td><td>+7</td></tr>
+<tr><td>X-002</td><td>Correctness §2.5 (NIT)</td><td>Renamed <code>GithubIngestResult.days_upserted</code> → <code>days_processed</code>. The field counts statements pushed into the libSQL batch, not affected-row count. Same number, accurate name. <code>bin/ingest.ts</code> log call updated.</td><td>+2/−2</td></tr>
+<tr><td>X-003</td><td>Deploy F3 (DEPLOY-BLOCKER)</td><td><code>/api/snapshot</code> error path no longer echoes <code>e.message</code> to the client. <code>console.error</code> logs the full error server-side; response body is hardcoded <code>{"error":"snapshot_failed"}</code>. Prevents leakage of DB URLs, file paths, PAT-related strings.</td><td>+4/−2</td></tr>
+<tr><td>X-004</td><td>Simplicity F1 (SIMPLIFY-NOW) — Variant D</td><td>Dropped <code>.js</code> extensions from all 17 internal-import sites across <code>packages/ingest/src</code>, <code>packages/ingest/bin</code>, and <code>apps/web/src</code>. Deleted the <code>exports</code> map from <code>packages/ingest/package.json</code>. Deleted the <code>resolve.extensionAlias</code> block from <code>next.config.mjs</code>. Three coupled hacks collapsed into zero. <em>Supersedes D-014.</em></td><td>~17 site rewrites, −4 in package.json, −6 in next config</td></tr>
+<tr><td>X-005</td><td>Simplicity F2 (SIMPLIFY-NOW) — <strong>REVERTED</strong></td><td>The reviewer claimed empirically that <code>serverComponentsExternalPackages</code> alone was sufficient and the webpack <code>externals.push</code> was redundant suspenders. <strong>Build verified otherwise:</strong> without the externals push, the production build pulls <code>@libsql/hrana-client/README.md</code> into the webpack graph via dynamic context-requires inside <code>libsql/index.js</code> and dies on "Module parse failed: Unexpected character". The externals push is what stops webpack from trying to parse the README as JS; <code>serverComponentsExternalPackages</code> only governs server-component-level externalization. <strong>Both are needed.</strong> Restored the webpack block with a comment explaining why. <em>Reaffirms D-015 against reviewer pushback.</em></td><td>0 net</td></tr>
+<tr><td>X-006</td><td>Simplicity F7 (SIMPLIFY-LATER)</td><td>Added <code>// TODO(next-15): rename experimental.serverComponentsExternalPackages -&gt; top-level serverExternalPackages</code> above the experimental block in <code>next.config.mjs</code>.</td><td>+2</td></tr>
+</table>
+
+<h3>Validation results</h3>
+<table>
+<tr><th>Check</th><th>Result</th></tr>
+<tr><td><code>pnpm install</code></td><td>Lockfile unchanged.</td></tr>
+<tr><td><code>pnpm -r typecheck</code></td><td>Both packages clean (<code>moduleResolution: Bundler</code> accepts extensionless imports natively).</td></tr>
+<tr><td><code>pnpm migrate</code></td><td>OK (<code>v0 -&gt; v1</code> — DB was scrubbed by the Phase 1 gitignore commit, so a re-migrate is the expected path). Confirms tsx is happy with Variant D.</td></tr>
+<tr><td><code>pnpm next build</code></td><td>OK after restoring the webpack externals (see X-005). Without them: build dies on hrana-client README parse.</td></tr>
+<tr><td>Happy-path API smoke</td><td><code>curl /api/snapshot?days=14</code> → 200 OK, shape matches spec, 14-day windows on each channel.</td></tr>
+<tr><td>Error-path leak check</td><td>With <code>DATABASE_URL=libsql://nonexistent.invalid</code>, response body is exactly <code>{"error":"snapshot_failed"}</code>. Server-side log captured the underlying connection error. Fix #3 verified end-to-end.</td></tr>
+</table>
+
+<h3>Reviewer accuracy notes</h3>
+<p>Calling this out for future trust-calibration:</p>
+<ul>
+<li><strong>Correctness reviewer:</strong> Findings were precise and verifiable. Both flagged items (1.1, 2.5) were real and the proposed fixes worked as described.</li>
+<li><strong>Simplicity reviewer:</strong> Variant D (F1) is a genuine win — collapsed three mechanisms into zero. But F2 was empirically wrong: the reviewer claimed to have tested that <code>serverComponentsExternalPackages</code> alone was sufficient, and it isn't. Possible cause: the reviewer's test env may have skipped the production build path, or libsql's transitive dependency on hrana-client changed since they tested. Either way: trust their direction but re-verify their "I tested this" claims on the production build path, not just <code>next dev</code>.</li>
+<li><strong>Deploy-readiness reviewer:</strong> F3 (error leakage) was crisp and the proposed fix was correct on first try. The remaining DEPLOY-BLOCKER items (F1 trace, F2 auth) were deferred by the user but are real — carry them into the Phase 3 deploy work.</li>
+</ul>
+
 <h2>Definition of done</h2>
 <ul>
   <li>[x] Q-001 … Q-006 resolved. Q-007 deferred.</li>

@@ -7,7 +7,7 @@ import {
   fillMissingDays,
   type Channel,
   type Day,
-} from "./streak.js";
+} from "./streak";
 
 export type ChannelSnapshot = {
   days: Day[];

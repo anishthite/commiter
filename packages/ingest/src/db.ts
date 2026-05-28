@@ -1,7 +1,7 @@
 import { createClient, type Client } from "@libsql/client";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { env } from "./env.js";
+import { env } from "./env";
 
 let _client: Client | null = null;
 

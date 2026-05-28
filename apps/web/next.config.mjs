@@ -4,14 +4,21 @@ const nextConfig = {
   // We import the workspace `ingest` package as TS source — Next needs
   // to transpile it like first-party code.
   transpilePackages: ["ingest"],
+  // TODO(next-15): rename experimental.serverComponentsExternalPackages
+  //                -> top-level serverExternalPackages.
   experimental: {
     // @libsql/client and the underlying `libsql` native module are
     // Node-only. Keep them external so Next doesn't try to bundle the
     // native bindings / README / LICENSE files.
     serverComponentsExternalPackages: ["@libsql/client", "libsql"],
   },
-  // Belt + suspenders: also mark them as webpack externals on the server
-  // build, since transpilePackages otherwise follows them into the graph.
+  // The serverComponentsExternalPackages flag is NOT sufficient by itself.
+  // The simplicity review (Phase 1, F2) claimed it was; empirically a
+  // production build without this webpack externals push still drags
+  // libsql/@libsql/hrana-client native bindings (and their README/LICENSE)
+  // into the webpack graph via dynamic context requires inside
+  // libsql/index.js. The externals push is what actually stops webpack
+  // from trying to parse those non-JS files.
   webpack: (config, { isServer }) => {
     if (isServer) {
       const externals = Array.isArray(config.externals) ? config.externals : [config.externals];
@@ -21,14 +28,6 @@ const nextConfig = {
       });
       config.externals = externals;
     }
-    // The `ingest` package uses Node-ESM-style `./foo.js` imports that
-    // actually resolve to `./foo.ts` (since tsx executes the TS source).
-    // Teach webpack the same rewrite so transpilePackages can follow them.
-    config.resolve = config.resolve || {};
-    config.resolve.extensionAlias = {
-      ...(config.resolve.extensionAlias || {}),
-      ".js": [".ts", ".tsx", ".js"],
-    };
     return config;
   },
 };

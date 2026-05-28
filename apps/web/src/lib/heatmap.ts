@@ -1,4 +1,4 @@
-import type { Day } from "ingest/src/streak.js";
+import type { Day } from "ingest/src/streak";
 
 /**
  * Reshape a flat ascending day list into a GitHub-style 53x7 grid:

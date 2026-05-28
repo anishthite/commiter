@@ -1,4 +1,4 @@
-import type { ChannelSnapshot } from "ingest/src/snapshot.js";
+import type { ChannelSnapshot } from "ingest/src/snapshot";
 import { Heatmap } from "./Heatmap";
 
 /**

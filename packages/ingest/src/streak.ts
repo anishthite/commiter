@@ -136,6 +136,13 @@ export function fillMissingDays(
   from: string,
   to: string
 ): Day[] {
+  // String comparison works for 'YYYY-MM-DD'. Reject inverted ranges
+  // explicitly — the 800-iteration safety cap below would otherwise
+  // silently fabricate a year of garbage.
+  if (to < from) {
+    throw new Error(`fillMissingDays: to (${to}) is before from (${from})`);
+  }
+
   const map = new Map<string, number>();
   for (const r of rows) map.set(r.date, r.count);
 
