@@ -11,11 +11,15 @@ out
 .env.local
 .env.*.local
 
-# data (libSQL local dev file)
-data/*.db
-data/*.db-journal
-data/*.db-wal
-data/*.db-shm
+# data (libSQL local dev files, anywhere in the tree)
+**/data/*.db
+**/data/*.db-journal
+**/data/*.db-wal
+**/data/*.db-shm
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
 
 # os / editor
 .DS_Store
