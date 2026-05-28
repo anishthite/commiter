@@ -192,9 +192,53 @@
   <li>L-008 — Track <em>quality</em> signal (e.g. tweet impressions, commit lines-changed) instead of just count, after streaks land.</li>
 </ul>
 
+<h2>Phase 1 build log — 2026-05-28</h2>
+<p><strong>Status:</strong> Phase 1 landed. <code>pnpm migrate</code> + <code>pnpm ingest:github</code> + <code>pnpm dev</code> = runnable. Empty DB renders an all-dim heatmap; once a PAT is supplied, GitHub fills in.</p>
+
+<h3>New decisions</h3>
+<table>
+<tr><th>ID</th><th>Choice</th><th>Rationale</th></tr>
+<tr><td>D-012</td><td>DB client = <code>@libsql/client</code> from day one (not <code>better-sqlite3</code>). <em>Supersedes the libSQL half of D-001.</em></td><td>Same library handles <code>file:./...</code> for dev and <code>libsql://...</code> for Turso prod. Avoids a rewrite when Phase 5 moves to hosted. No code change to deploy — only env vars.</td></tr>
+<tr><td>D-013</td><td>GitHub auth = Personal Access Token, not OAuth.</td><td>Single-user dashboard. OAuth would require a redirect server and per-user token storage for an audience of one. PAT with <code>read:user</code> is one env var.</td></tr>
+<tr><td>D-014</td><td>Workspace import shape: <code>ingest/src/foo.js</code> from the web app, resolved via <code>exports</code> map (<code>.js</code>→<code>.ts</code>) + Next webpack <code>resolve.extensionAlias</code>.</td><td>Keeps the ingest package runnable as raw TS (via tsx) AND consumable by Next without a build step. One source of truth, zero <code>dist/</code> sync drift.</td></tr>
+<tr><td>D-015</td><td>libSQL native bindings marked as webpack externals + <code>serverComponentsExternalPackages</code> on the server build.</td><td>Without this, transpilePackages drags the native libsql README / LICENSE into the webpack graph and the build dies parsing markdown as JS. Belt + suspenders required — Next config alone wasn't enough.</td></tr>
+<tr><td>D-016</td><td>Snapshot endpoint <code>/api/snapshot</code> uses <code>runtime = "nodejs"</code> and <code>dynamic = "force-dynamic"</code>. SSR page reads the same builder directly, no client fetch.</td><td>Edge runtime can't load libsql native bindings. <code>force-dynamic</code> kills the static-prerender attempt that fights with a per-request DB read.</td></tr>
+<tr><td>D-017</td><td>Empty-DB path renders the dashboard with all-zero days rather than erroring.</td><td>First-run UX: user can <code>pnpm dev</code> before running ingest and see the shape. Error banner only fires when migration itself fails.</td></tr>
+</table>
+
+<h3>Tradeoffs</h3>
+<table>
+<tr><th>ID</th><th>Picked</th><th>Over</th><th>Reason</th></tr>
+<tr><td>T-011</td><td>Hand-rolled Next scaffold (manual files).</td><td><code>create-next-app</code>.</td><td>Interactive prompts can't run unattended; rolling by hand is ~10 files and dodges the eslint/jest defaults we don't want.</td></tr>
+<tr><td>T-012</td><td>Importing <code>ingest/src/*</code> as TS source via transpilePackages.</td><td>Building <code>ingest</code> to <code>dist/</code> and consuming the compiled JS.</td><td>One build step removed. Cost: the webpack-externals + extensionAlias dance (D-014, D-015). Net: simpler dev loop.</td></tr>
+<tr><td>T-013</td><td>Snapshot SSR reads DB directly inside the React Server Component.</td><td>Client component that <code>fetch</code>es <code>/api/snapshot</code>.</td><td>Eliminates a network hop on first paint. <code>/api/snapshot</code> still exists for phone polling and future client refresh.</td></tr>
+</table>
+
+<h3>Followups</h3>
+<table>
+<tr><th>ID</th><th>Item</th></tr>
+<tr><td>L-009</td><td>Phase 2: pi-chrome scrape adapter (<code>packages/ingest/src/twitter/*</code>) + <code>ship</code> CLI fleshed out + LLM fallback when fast path returns 0 twice.</td></tr>
+<tr><td>L-010</td><td>Phase 3: NERV skin — hex corners (clip-path), VT323 big numbers, scanline overlay, rotating MAGI status line, ticking clock.</td></tr>
+<tr><td>L-011</td><td>Phase 4: launchd plists for 15-min ingest + 18:00/23:00 PT nudges; macOS notification on miss.</td></tr>
+<tr><td>L-012</td><td>Pluggable <code>today_pending</code> grace window: PLAN says no grace in v1, but the streak engine already accepts the flag. Wire it to env (<code>NERV_CUTOFF_HOUR</code>) when we want morning grace.</td></tr>
+<tr><td>L-013</td><td>Vitest harness for <code>streak.ts</code>. Smoke-tested by hand this pass; turn the scratch cases into permanent unit tests.</td></tr>
+<tr><td>L-014</td><td>Turso provisioning + Vercel deploy. Two env vars (<code>DATABASE_URL</code>, <code>DATABASE_AUTH_TOKEN</code>) and a <code>NERV_PILOT_TOKEN</code> cookie gate.</td></tr>
+</table>
+
+<h3>Assumptions made this pass</h3>
+<table>
+<tr><th>ID</th><th>Assumption</th></tr>
+<tr><td>A-010</td><td>The local pnpm version (9.0.0) matches the <code>packageManager</code> pin; if a CI machine has 10+, the warning is benign.</td></tr>
+<tr><td>A-011</td><td>Phase 1 dashboard is intentionally <em>bare</em>: borders + Tailwind tokens, no scanlines, no hex corners, no big VT323 numbers. Phase 3 will skin.</td></tr>
+<tr><td>A-012</td><td>Heatmap day-of-week alignment uses UTC weekday for the start date — close enough at 365-day scale and dodges DST. If we later want true LA-local weekday alignment, switch to <code>Intl.DateTimeFormat</code> with <code>weekday</code>.</td></tr>
+</table>
+
 <h2>Definition of done</h2>
 <ul>
   <li>[x] Q-001 … Q-006 resolved. Q-007 deferred.</li>
+  <li>[x] Repo scaffolded, <code>pnpm migrate</code> + <code>pnpm ingest:github</code> + <code>pnpm dev</code> all green (Phase 1).</li>
+  <li>[x] <code>/api/snapshot</code> returns the spec'd Snapshot shape against an empty DB (200 OK, all-zero days).</li>
+  <li>[x] Bare 53×7 heatmap + dual MAGI panels render with Tailwind NERV tokens.</li>
   <li>[ ] <code>pnpm ingest</code> populates <code>daily_count</code> for both channels against Turso.</li>
   <li>[ ] pi-chrome scrape path verified end-to-end against x.com/anishthite.</li>
   <li>[ ] Vercel-deployed <code>/</code> renders two heatmaps + streaks matching Turso contents.</li>
