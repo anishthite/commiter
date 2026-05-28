@@ -1,0 +1,28 @@
+# deps
+node_modules
+.pnpm-store
+
+# next
+.next
+out
+
+# env
+.env
+.env.local
+.env.*.local
+
+# data (libSQL local dev file)
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# os / editor
+.DS_Store
+.vscode
+.idea
+*.log
+
+# build artifacts
+dist
+*.tsbuildinfo

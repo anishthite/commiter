@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Spec — nerv-shipping-tracker</title>
+<meta name="task" content="NERV-OS styled dashboard tracking daily GitHub + Twitter/X output with heatmaps and streaks">
+<meta name="date-started" content="2026-05-23">
+<meta name="date-updated" content="2026-05-23">
+<meta name="status" content="planning">
+<meta name="depends-on" content="pi-chrome (npm), turso, vercel">
+<meta name="blast-radius" content="low">
+<meta name="tags" content="nerv,dashboard,github,twitter,streaks,nextjs,sqlite">
+<meta name="related" content="">
+<style>
+  body { font: 14px/1.45 -apple-system, system-ui, sans-serif; max-width: 880px; margin: 1.5rem auto; padding: 0 1rem; color: #111; }
+  h1 { font-size: 20px; margin: 0 0 .25rem; }
+  h2 { font-size: 15px; margin: 1.4rem 0 .4rem; border-bottom: 1px solid #ddd; padding-bottom: .2rem; }
+  h3 { font-size: 13px; margin: 1rem 0 .3rem; color: #444; text-transform: uppercase; letter-spacing: .04em; }
+  table { border-collapse: collapse; width: 100%; margin: .4rem 0 .8rem; }
+  th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; vertical-align: top; }
+  th { background: #f6f6f6; font-weight: 600; }
+  code, pre { font-family: ui-monospace, Menlo, monospace; }
+  code { background: #f1f1f1; padding: 1px 4px; border-radius: 3px; font-size: 12.5px; }
+  pre { background: #f6f6f6; padding: .55rem .7rem; border-radius: 4px; overflow-x: auto; font-size: 12.5px; line-height: 1.4; }
+  ul, ol { margin: .3rem 0 .8rem 1.2rem; padding: 0; }
+  li { margin: .15rem 0; }
+  .q { border-left: 3px solid #b85c00; background: #fff8ee; padding: .4rem .7rem; margin: .4rem 0; }
+  .q .id { color: #b85c00; font-weight: 700; }
+  .q.resolved { border-left-color: #2a7a2a; background: #f1faf1; }
+  .q.resolved .id { color: #2a7a2a; }
+  .blast-low { color: #2a7a2a; } .blast-med { color: #b85c00; } .blast-high { color: #b00020; font-weight: 600; }
+  .meta { color: #555; font-size: 12.5px; margin-bottom: .8rem; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 2px 14px; font-size: 13px; margin: .4rem 0 1rem; }
+  .kv b { color: #444; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>NERV-OS shipping tracker — plan</h1>
+<p class="meta">
+  <code>main</code> · worktree <code>~/workspace/commiter</code> · 2026-05-23 · status <b>planning</b> · blast <span class="blast-low">low</span>
+</p>
+
+<h2>Summary</h2>
+<div class="kv">
+  <b>Goal</b><div>Two-panel NERV/MAGI dashboard rendering GitHub + Twitter daily-output heatmaps and streaks; nudges if no ship by EOD.</div>
+  <b>Source</b><div>GitHub GraphQL <code>contributionsCollection</code>; Twitter via <code>pi-chrome</code> driving signed-in Chrome (DOM scrape primary, LLM fallback).</div>
+  <b>Surface</b><div>Next.js app on Vercel at <code>/</code>; <code>/api/snapshot</code>; local CLIs <code>ingest</code>, <code>ship</code>.</div>
+  <b>Schema</b><div>libSQL (Turso): <code>daily_count</code>, <code>event</code>, <code>meta</code>.</div>
+  <b>Streak rule</b><div>Per-channel + combined. <code>ship_day := count &gt;= 1</code>. Combined = <b>AND</b> (resolved).</div>
+  <b>TZ</b><div><code>America/Los_Angeles</code> (resolved).</div>
+  <b>Deploy</b><div>Frontend on <b>Vercel</b>, DB on <b>Turso</b>, ingestor local on Mac (pi-chrome needs Chrome).</div>
+  <b>Open Qs</b><div>1 remaining (Q-007). 6 resolved.</div>
+</div>
+
+<h2>API contract</h2>
+<h3>Request</h3>
+<pre>GET /api/snapshot
+  ?days=365                   // optional, default 365, max 365</pre>
+<h3>Response — <code>Snapshot</code></h3>
+<pre>{
+  generated_at: string,       // ISO
+  tz: string,                 // 'America/New_York'
+  channels: {
+    github: {
+      days: Array&lt;{ date: 'YYYY-MM-DD', count: number }&gt;,
+      streak_current: number,
+      streak_longest: number,
+      today_count: number
+    },
+    twitter: { /* same shape */ }
+  },
+  combined: { streak_current, streak_longest, mode: 'or' | 'and' }
+}</pre>
+
+<h2>Algorithm — streak</h2>
+<ol>
+  <li>Build sorted <code>days[]</code> from <code>daily_count</code> for channel, filling missing dates with <code>0</code>.</li>
+  <li><code>ship[i] = days[i].count &gt;= threshold</code> (threshold default <code>1</code>).</li>
+  <li><b>Current streak:</b> walk backward from today. If <code>!ship[today]</code> and now &lt; <code>cutoff_time</code>, treat today as pending and start from yesterday; else streak ends at today.</li>
+  <li>Increment counter while <code>ship[i]</code>; stop at first <code>false</code>.</li>
+  <li><b>Longest:</b> single pass, max consecutive <code>true</code>.</li>
+  <li><b>Combined:</b> <code>ship_combined[i] = ship_gh[i] OP ship_tw[i]</code> where <code>OP ∈ {OR, AND}</code> per Q-004.</li>
+</ol>
+
+<h2>UI layout</h2>
+<ol>
+  <li><code>&lt;TopBar/&gt;</code> — NERV hex logo, title <code>CENTRAL DOGMA</code>, live clock, sync indicator.</li>
+  <li><code>&lt;MagiPanel channel="github"/&gt;</code> — left. Streak (big), today count, 53×7 heatmap.</li>
+  <li><code>&lt;MagiPanel channel="twitter"/&gt;</code> — right. Same shape.</li>
+  <li><code>&lt;StatusBar/&gt;</code> — bottom. <code>SYS:OK</code>, last sync, combined streak, rotating MAGI flavor text.</li>
+  <li><code>&lt;ScanlineOverlay/&gt;</code> — fixed, pointer-events none, 1px scanlines @ 6% alpha + vignette.</li>
+  <li><code>&lt;RedAlert/&gt;</code> — full-screen takeover when <code>!ship_today_combined</code> AND <code>now &gt;= alert_time</code>.</li>
+</ol>
+
+<h2>Files</h2>
+<table>
+<tr><th>Path</th><th>Kind</th><th>Delta</th></tr>
+<tr><td><code>PLAN.md</code></td><td>new</td><td>User-facing plan.</td></tr>
+<tr><td><code>apps/web/</code></td><td>new</td><td>Next.js app, App Router, Tailwind, NERV theme.</td></tr>
+<tr><td><code>apps/web/src/app/page.tsx</code></td><td>new</td><td>Dashboard SSR shell, polls <code>/api/snapshot</code>.</td></tr>
+<tr><td><code>apps/web/src/app/api/snapshot/route.ts</code></td><td>new</td><td>Reads SQLite, computes streaks, returns <code>Snapshot</code>.</td></tr>
+<tr><td><code>apps/web/src/lib/nerv/{Heatmap,Streak,StatusBar,RedAlert}.tsx</code></td><td>new</td><td>Skinned components.</td></tr>
+<tr><td><code>packages/ingest/src/github.ts</code></td><td>new</td><td>GraphQL <code>contributionsCollection</code> → upsert <code>daily_count</code>.</td></tr>
+<tr><td><code>packages/ingest/src/twitter/pi-chrome.ts</code></td><td>new</td><td>Spawns <code>pi --prompt</code> one-shot; runs <code>chrome_navigate</code> → <code>chrome_evaluate(scrape.js)</code>; parses JSON.</td></tr>
+<tr><td><code>packages/ingest/src/twitter/scrape.js</code></td><td>new</td><td><code>chrome_evaluate</code> payload: query <code>article[data-testid="tweet"]</code>, return <code>[{id, ts_iso, text_snippet}]</code>.</td></tr>
+<tr><td><code>packages/ingest/src/twitter/llm-extract.ts</code></td><td>new</td><td>Fallback: <code>chrome_snapshot</code> → Claude Haiku / Ollama → JSON. Triggered after 2 consecutive 0-result ticks.</td></tr>
+<tr><td><code>packages/ingest/src/twitter/self-report.ts</code></td><td>new</td><td>Backstop adapter reading <code>event</code> rows written by <code>ship</code> CLI when Chrome unavailable.</td></tr>
+<tr><td><code>packages/ingest/src/streak.ts</code></td><td>new</td><td>Pure streak math (see Algorithm).</td></tr>
+<tr><td><code>packages/ingest/src/db.ts</code></td><td>new</td><td><code>better-sqlite3</code> client + migrations.</td></tr>
+<tr><td><code>packages/ingest/bin/ingest.ts</code></td><td>new</td><td>CLI: <code>ingest [--channel=github|twitter|all]</code>.</td></tr>
+<tr><td><code>packages/ingest/bin/ship.ts</code></td><td>new</td><td>CLI: <code>ship tweet "..."</code> · <code>ship note "..."</code> · writes <code>event</code>.</td></tr>
+<tr><td><code>data/ship.local.db</code></td><td>new</td><td>libSQL local file for dev, gitignored. Prod = Turso URL.</td></tr>
+<tr><td><code>scripts/launchd/com.nerv.ingest.plist</code></td><td>new</td><td>Every-15-min ingest cron via launchd.</td></tr>
+<tr><td><code>scripts/launchd/com.nerv.nudge.plist</code></td><td>new</td><td>18:00 + 23:00 PT nudge cron.</td></tr>
+<tr><td><code>.env.example</code></td><td>new</td><td><code>GITHUB_TOKEN</code>, <code>TURSO_URL</code>, <code>TURSO_TOKEN</code>, <code>NERV_PILOT_TOKEN</code>, <code>ANTHROPIC_API_KEY?</code>.</td></tr>
+</table>
+
+<h2>Decisions</h2>
+<table>
+<tr><th>ID</th><th>Choice</th><th>Rationale</th></tr>
+<tr><td>D-001</td><td>Stack = Next.js + Tailwind + <code>better-sqlite3</code>.</td><td>SSR makes initial paint instant; SQLite is one file, zero ops; Tailwind makes the NERV skin tokens trivial.</td></tr>
+<tr><td>D-002</td><td>GitHub source = GraphQL <code>contributionsCollection</code>.</td><td>Returns exact data shown on github.com profile, one call, includes private if token has <code>read:user</code>.</td></tr>
+<tr><td>D-003</td><td>Streaks computed at read-time from <code>daily_count</code>.</td><td>365 rows; trivial cost; eliminates denormalization bugs.</td></tr>
+<tr><td>D-004</td><td>Always wire the <code>ship</code> self-report CLI in addition to any API-backed Twitter source.</td><td>X APIs/scrapers break; manual log is the floor that keeps the streak honest.</td></tr>
+<tr><td>D-005</td><td>Pluggable twitter adapter interface.</td><td>Whichever Q-001 answer, swapping later is one file.</td></tr>
+<tr><td>D-006</td><td>Local-first deploy via <code>pnpm dev</code> + launchd cron; Tauri later.</td><td>Ship the dashboard this week; Tauri is a wrapper, not a blocker. <em>Superseded by D-008.</em></td></tr>
+<tr><td>D-007</td><td>Twitter ingest via <code>pi-chrome</code> bridge driving user's signed-in Chrome.</td><td>Bypasses the $100/mo X API; uses already-authenticated profile; pi-chrome already installed locally. Resolves Q-001.</td></tr>
+<tr><td>D-008</td><td>Deploy = Vercel (frontend) + Turso libSQL (DB). Ingestor stays local on Mac. Supersedes D-006.</td><td>User wants phone access. Ingestor cannot move (needs Chrome). Turso bridges local writes to hosted reads with the same SQL.</td></tr>
+<tr><td>D-009</td><td>Two-tier Twitter scraping: deterministic DOM via <code>chrome_evaluate</code> first; LLM extraction from <code>chrome_snapshot</code> only on failure.</td><td>Deterministic is free and fast; LLM is robust to X DOM changes but costs cents/call. Tier-2 only fires when tier-1 returns 0 twice in a row.</td></tr>
+<tr><td>D-010</td><td>Phase-2 invocation of pi-chrome = shell out to <code>pi --prompt &lt;script&gt; --json</code>.</td><td>Zero plumbing; lets pi-chrome handle auth + tool dispatch. Move to direct bridge HTTP calls (port 17318) in Phase 5 only if per-call latency matters.</td></tr>
+<tr><td>D-011</td><td>Combined streak mode = <code>AND</code>. TZ = <code>America/Los_Angeles</code>. Resolves Q-004, Q-005.</td><td>User explicit. Harder mode = more accountability.</td></tr>
+</table>
+
+<h2>Tradeoffs</h2>
+<table>
+<tr><th>ID</th><th>Picked over Rejected</th><th>Reason</th></tr>
+<tr><td>T-001</td><td>Next.js web app over Tauri desktop app for v1.</td><td>Browser tab ships in days, native window is polish. Tauri can wrap the same web app later (L-001).</td></tr>
+<tr><td>T-002</td><td>SQLite over JSON file.</td><td>Proper indexed reads, transactions, room for the <code>event</code> table without inventing a format.</td></tr>
+<tr><td>T-003</td><td>GraphQL <code>contributionsCollection</code> over scraping <code>github.com/&lt;user&gt;</code> profile SVG.</td><td>Official, stable shape, includes private contribs with a token.</td></tr>
+<tr><td>T-004</td><td>Re-fetch full 365-day window each ingest over incremental.</td><td>One small call; idempotent upsert; no edge cases on backfill.</td></tr>
+<tr><td>T-005</td><td>OR-combined streak default over AND.</td><td>AND punishes you for shipping code on a heads-down day; OR rewards any output. Configurable (Q-004).</td></tr>
+<tr><td>T-006</td><td>Pluggable twitter adapter over hardcoding one source.</td><td>X access keeps changing; isolating the failure point is cheap.</td></tr>
+<tr><td>T-007</td><td>Turso (libSQL) over Supabase (Postgres) or local-only SQLite.</td><td>Same SQL as our local dev file (zero migration cost); free tier ample; libSQL HTTP client works in Vercel edge runtime.</td></tr>
+<tr><td>T-008</td><td>Vercel frontend + local Mac ingestor over fully-local Tauri app.</td><td>Phone access requirement. Vercel is free for one user. Tauri stays on L-001 if we later want a desktop widget.</td></tr>
+<tr><td>T-009</td><td>Shell-out to <code>pi --prompt</code> over directly hitting bridge HTTP <code>:17318</code>.</td><td>Bridge protocol is undocumented and would need reverse-engineering from the extension source. Shell-out works today.</td></tr>
+<tr><td>T-010</td><td>AND-combined streak over OR.</td><td>User picked harder mode. Reverses T-005 default for this user.</td></tr>
+</table>
+
+<h2>Open questions</h2>
+
+<div class="q resolved"><span class="id">Q-001 RESOLVED</span> — Twitter source = <b>pi-chrome bridge → signed-in Chrome → x.com/anishthite</b>. DOM scrape primary (free, fast), LLM extraction fallback (Claude Haiku or local Ollama). <code>ship</code> CLI as manual backstop. See D-007, D-009, D-010.</div>
+
+<div class="q resolved"><span class="id">Q-002 RESOLVED</span> — GitHub user = <code>anishthite</code>. Private contribs counted. Need PAT with <code>read:user</code> + <code>repo</code> scope, stored in <code>GITHUB_TOKEN</code> env var.</div>
+
+<div class="q resolved"><span class="id">Q-003 RESOLVED</span> — Deploy = Vercel (frontend) + Turso (DB). Ingestor stays local on Mac (needs Chrome). See D-008.</div>
+
+<div class="q resolved"><span class="id">Q-004 RESOLVED</span> — Combined streak mode = <b>AND</b>. Both channels must ship that day. See D-011.</div>
+
+<div class="q resolved"><span class="id">Q-005 RESOLVED</span> — TZ = <code>America/Los_Angeles</code>. See D-011.</div>
+
+<div class="q resolved"><span class="id">Q-006 RESOLVED</span> — Nudge = macOS notification at 18:00 PT (via <code>osascript</code> / <code>terminal-notifier</code>); full-screen red takeover when dashboard is open after 23:00 PT and combined ship still false.</div>
+
+<div class="q"><span class="id">Q-007</span> — <b>Streak grace period.</b> Assumed: zero grace — miss a day, combined streak resets. Alternative: 1 skip per 7 days. <em>Defer until v1 ships; ask user if they want to soften after first reset.</em></div>
+
+<h2>Assumptions</h2>
+<ul>
+  <li>A-001 — User runs macOS; launchd is available for cron.</li>
+  <li>A-002 — Node 20+ and pnpm available.</li>
+  <li>A-003 — Counting <em>contributions</em> (commits + PRs + issues + reviews, GitHub's own definition) is the right metric, not raw commits only.</li>
+  <li>A-004 — One GitHub identity (<code>anishthite</code>), one X identity. No multi-account.</li>
+  <li>A-005 — Tweets count regardless of whether they are replies or originals. If wrong, filter in <code>scrape.js</code>.</li>
+  <li>A-006 — User has <code>pi-chrome</code> onboarded (<code>/chrome doctor</code> green) with their primary Chrome profile signed into x.com.</li>
+  <li>A-007 — User's Mac is awake and Chrome is running at scheduled ingest ticks. Missed ticks tolerated — next tick re-scans full window.</li>
+  <li>A-008 — Twitter scrape window = last 30 days per tick (GitHub window = 365). Old days locked in.</li>
+  <li>A-009 — One-shot <code>pi --prompt</code> can authorize Chrome non-interactively after initial <code>/chrome authorize indefinite</code>. Verify in Phase 2; if false, fall back to a long-lived background Pi session.</li>
+</ul>
+
+<h2>Reversibility</h2>
+<p>R-001 — Entire project is greenfield. Local ingestor only reads GitHub + reads x.com via your own session; writes only to Turso. Revert = <code>rm -rf</code> + delete Turso DB + delete Vercel project. Blast: <span class="blast-low">low</span>.</p>
+<p>R-002 — pi-chrome bridge is loopback-only and refuses browser-origin requests; revoke any time with <code>/chrome revoke</code>. Blast: <span class="blast-low">low</span>.</p>
+
+<h2>Followups</h2>
+<ul>
+  <li>L-001 — Tauri wrapper for always-on-top desktop widget.</li>
+  <li>L-002 — Per-day drill-down: clicking a heatmap cell shows the commits/tweets for that day.</li>
+  <li>L-003 — Weekly Sunday summary email ("MAGI Weekly Synopsis").</li>
+  <li>L-004 — Multi-user mode (probably never; logging anyway).</li>
+  <li>L-005 — Boot/alarm SFX with a mute toggle.</li>
+  <li>L-006 — Replace <code>pi --prompt</code> shell-out with direct bridge HTTP calls to <code>:17318</code> if latency hurts.</li>
+  <li>L-007 — Replicate Turso to a local SQLite read-replica for offline dashboard access.</li>
+  <li>L-008 — Track <em>quality</em> signal (e.g. tweet impressions, commit lines-changed) instead of just count, after streaks land.</li>
+</ul>
+
+<h2>Definition of done</h2>
+<ul>
+  <li>[x] Q-001 … Q-006 resolved. Q-007 deferred.</li>
+  <li>[ ] <code>pnpm ingest</code> populates <code>daily_count</code> for both channels against Turso.</li>
+  <li>[ ] pi-chrome scrape path verified end-to-end against x.com/anishthite.</li>
+  <li>[ ] Vercel-deployed <code>/</code> renders two heatmaps + streaks matching Turso contents.</li>
+  <li>[ ] Combined streak in AND mode unit-tested (current=N, longest=M, edge: shipped GH only today = streak holds for today pending, resets at midnight).</li>
+  <li>[ ] NERV skin: panels, scanlines, hex corners, VT323 numerics in place.</li>
+  <li>[ ] launchd ingest job firing every 15 min; nudge job firing at 18:00 + 23:00 PT.</li>
+  <li>[ ] Phone-accessible via Vercel URL with pilot-token gate.</li>
+</ul>
+
+</body>
+</html>

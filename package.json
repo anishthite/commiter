@@ -1,0 +1,22 @@
+{
+  "name": "commiter",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm -r build",
+    "start": "pnpm --filter web start",
+    "ingest": "pnpm --filter ingest ingest",
+    "ingest:github": "pnpm --filter ingest ingest --channel=github",
+    "migrate": "pnpm --filter ingest migrate",
+    "ship": "pnpm --filter ingest ship",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
