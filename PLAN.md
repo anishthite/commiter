@@ -1,285 +1,145 @@
 # NERV OS — Shipping Tracker
 
-> "PATTERN: BLUE. Daily output confirmed."
+> _"Patterns blue and orange. Synchronization holding."_
 
-A two-panel MAGI-style dashboard that watches your GitHub commits and your X/Twitter posts, renders GitHub-style heatmaps for each, tracks streaks, and yells at you if you haven't shipped by end of day.
-
----
-
-## 0. The vision (what you'll be looking at)
-
-A fullscreen, black-background, orange-on-black terminal-feel dashboard. Two large hexagon-cornered panels side by side:
-
-```
-┌─ NERV // CENTRAL DOGMA ────────────────────────────── 2026-05-23 14:07:33 ─┐
-│                                                                            │
-│  ╱╲  MAGI-01 :: GITHUB                ╱╲  MAGI-02 :: X / TWITTER          │
-│ ╱  ╲  ─────────────────              ╱  ╲  ───────────────────             │
-│ PATTERN: BLUE                        PATTERN: ORANGE                       │
-│ STREAK: 042                          STREAK: 007                           │
-│ TODAY:  ▓▓▓▓▓ 7 commits              TODAY:  ▓ 0 posts  [WARNING]          │
-│                                                                            │
-│  ▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢                ▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢                  │
-│  ▢▢▣▣▢▣▣▣▢▣▢▢▣▣▣▢▢▢▢▢   [52 wk]      ▢▣▢▢▢▢▣▢▢▢▢▢▢▣▢▢▢▢▢▢   [52 wk]       │
-│  ▢▣▣▣▢▢▣▣▣▢▢▢▣▣▢▣▢▢▢▢                ▢▢▢▢▢▣▢▢▢▢▢▢▢▢▣▢▢▢▢▢▢                │
-│                                                                            │
-├────────────────────────────────────────────────────────────────────────────┤
-│ SYS:OK  · LAST SYNC 14:07:01  · COMBINED STREAK 042  · ONE OF YOU IS LYING │
-└────────────────────────────────────────────────────────────────────────────┘
-```
-
-Heatmap cells: sharp squares, orange-amber gradient (`#3a1a00 → #ff6600 → #ffaa33`). NERV hex logo top-left. Subtle CRT scanlines. Numbers in `VT323` / `IBM Plex Mono`. Status bar at the bottom with timestamps, sync state, and a rotating MAGI-style status line.
+A two-panel MAGI dashboard that tracks daily "did I ship?" output on GitHub and on X. Heatmaps, streaks, NERV chrome. Single Vercel deploy, no database, no second machine.
 
 ---
 
-## 1. Aesthetic spec
+## §1. Mission
 
-| Layer | Spec |
-|---|---|
-| Palette | `bg #000`, `nerv-orange #ff6600`, `amber #ffaa33`, `warn-red #ff0033`, `grid-dim #2a1500`, `text #ffd9a8` |
-| Font | `VT323` for big numbers · `IBM Plex Mono` / `JetBrains Mono` for everything else |
-| Decor | Hex-clipped panel corners, scanline overlay (1px @ 6% opacity), subtle CRT vignette |
-| Heatmap | 53 × 7 grid, 11px squares, 2px gap, sharp corners, amber gradient on missing-day `#1a0a00` |
-| Big number | Streak count rendered ≥120px, slight glow, monospace |
-| Sounds (opt) | Boot beep on load, alarm tone if no ship by 20:00 |
-| Status text | All-caps, narrow tracking, rotates: `PATTERN ANALYSIS`, `SYNCHRONIZING`, `WAITING FOR INPUT` |
+Make falling off the wagon visible enough that I don't.
 
----
+- One screen, two panels (MAGI-01 GitHub, MAGI-02 X).
+- 53×7 contribution heatmap per panel.
+- Current streak, longest streak, today count per panel.
+- All data lives upstream — GitHub + X — and we pull from them on demand.
+- Time zone: `America/Los_Angeles` (configurable via `NERV_TZ`).
 
-## 2. Data sources
+Out of scope (deferred):
 
-### GitHub — solved
-Use the **GraphQL `contributionsCollection`** query. Returns a day-by-day count for the past 365 days *exactly* matching what github.com shows on your profile. Public + private (if you set `read:user`). Free, official, one HTTP call.
-
-```graphql
-query($login: String!, $from: DateTime!, $to: DateTime!) {
-  user(login: $login) {
-    contributionsCollection(from: $from, to: $to) {
-      contributionCalendar {
-        totalContributions
-        weeks { contributionDays { date contributionCount } }
-      }
-    }
-  }
-}
-```
-
-### Twitter / X — solved via pi-chrome
-We use **your already signed-in Chrome session** via `pi-chrome`'s loopback bridge (`127.0.0.1:17318`). No X API, no scraper subscription, no fragile reverse-auth — your real authenticated profile, driven locally.
-
-**Flow per ingest tick (every 15 min):**
-```
-  Node ingestor
-    → POST 127.0.0.1:17318           # pi-chrome bridge
-        chrome_navigate("https://x.com/anishthite")
-        chrome_wait_for("article[data-testid='tweet']")
-        chrome_evaluate(scrape.js)   # scrape DOM → [{id, ts}, ...]
-    → if scrape returns 0 OR DOM shape changed:
-        chrome_snapshot()
-        → POST to small LLM (Claude Haiku via API, or local Ollama qwen2.5:7b)
-            "extract tweet IDs and timestamps from this snapshot, return JSON"
-    → upsert into event + daily_count tables
-```
-
-Two-tier ingestion:
-
-| Tier | Mechanism | Cost | When used |
-|---|---|---|---|
-| **Fast path** | `chrome_evaluate` with a deterministic DOM scraper (`article[data-testid="tweet"]`, parse `<time datetime=...>`, `status/<id>` href) | Free | Default every tick |
-| **LLM fallback** | `chrome_snapshot` → Claude Haiku (~$0.001/call) or local Ollama | Cents/month or free | When fast path returns 0 / X changes the DOM |
-
-Pi-chrome is already installed at `~/.nvm/.../node_modules/pi-chrome`. The bridge is local-only, refuses browser-origin requests, and is locked until `/chrome authorize` from a Pi session. For unattended cron, options are:
-
-- **Option 1:** Bridge auto-authorizes after onboard if `indefinite`; verify with `/chrome status`.
-- **Option 2:** Spawn `pi` with a one-shot prompt from the cron (cleanest, lets pi-chrome handle auth) — `pi --prompt "<script>" --json`.
-- **Option 3:** Reverse-engineer the bridge HTTP protocol and call it directly from Node (fastest, no Pi process needed).
-
-Start with **Option 2** for Phase 2 (zero plumbing, just shell out to `pi`), move to Option 3 in Phase 5 if the per-call latency matters.
-
-**Backstop:** still ship the `ship` self-report CLI so you can log a tweet manually when Chrome isn't running (laptop closed, traveling, etc.).
-
-*Constraint:* the ingestor must run on the Mac that has your Chrome session. It cannot move to Vercel. See §4 for how the DB bridges the two sides.
+- Push / SMS / OS-level nudges (see Followups L-002).
+- Manual `/api/ship` fallback for when X feeds are dark (L-001).
+- Long-term Twitter history beyond what Nitter RSS surfaces (L-003).
 
 ---
 
-## 3. Architecture
-
-The ingestor must run locally (needs your Chrome), but you want phone access. Solution: **hosted libSQL** (Turso) as the shared store. Same SQLite schema; libSQL gives us a remote endpoint the local ingestor writes to and the Vercel app reads from.
+## §2. Architecture — stateless, Vercel-only
 
 ```
-┌──── ON YOUR MAC (always-on while laptop is awake) ──────────────┐
-│                                                                  │
-│  launchd  ──every 15m──▶  ingest CLI                            │
-│                              │                                   │
-│                              ├─▶ GitHub GraphQL (PAT)            │
-│                              │                                   │
-│                              └─▶ pi-chrome bridge :17318         │
-│                                     ↕                            │
-│                                  your signed-in Chrome           │
-│                                     ↕                            │
-│                                   x.com/anishthite               │
-│                                                                  │
-│  ship CLI (manual fallback) ──────┐                              │
-│                                   ▼                              │
-│                              writes to ──────────────────▶ Turso │
-└─────────────────────────────────────────────────────────────────┘
-                                                              │
-                                                              ▼
-┌──── ON VERCEL (the dashboard) ──────────────────────────────────┐
-│                                                                  │
-│  Next.js  ◀── reads ──── Turso (libSQL HTTP, edge replicated)   │
-│  /        → SSR dashboard (NERV skin)                            │
-│  /api/snapshot → days[], streaks{}                               │
-│                                                                  │
-│  Auth: simple shared-secret cookie (it's just you).              │
-└─────────────────────────────────────────────────────────────────┘
+┌──── ON VERCEL ────────────────────────────────────────────────┐
+│                                                                │
+│   Next.js 14 App Router                                        │
+│     ▸ GET /                                                    │
+│         page.tsx                                               │
+│           getSnapshot(365)                                     │
+│             ├ fetchGithubDays    next:{revalidate:3600}        │
+│             └ fetchTwitterDays   next:{revalidate:3600}        │
+│           computeStreak × 2 + combineDays                      │
+│           render <MagiPanel/> × 2                              │
+│                                                                │
+│     ▸ GET /api/snapshot?days=N                                 │
+│         same plumbing, returned as JSON                        │
+│         cache-control: public, s-maxage=3600, swr=600          │
+│                                                                │
+│   No DB. No cron. No Mac. No pi-chrome.                        │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-**Stack:**
-- **Frontend:** Next.js App Router + Tailwind + NERV theme. Deployed to **Vercel** (free hobby tier). SSR every request from Turso, no client polling needed.
-- **DB:** **Turso** (libSQL). Free tier = 9 GB storage, 1B row reads/mo. Same SQL as SQLite. Local dev points at a local libSQL file; prod points at the Turso URL via env.
-- **Ingestor:** TypeScript CLI on the Mac. Uses `@libsql/client` to write directly to Turso. Idempotent — re-fetches the full 365-day GitHub window + last 30 days of tweets each tick, upserts.
-- **Cron:** local `launchd` job every 15 min. Optional second nudge cron at 18:00 local that runs a no-op ingest then checks shipping status and fires a macOS notification.
-- **Auth:** Vercel app is gated by a single shared secret in a cookie (`NERV_PILOT_TOKEN`). It's only ever you.
-- **Phone access:** open the Vercel URL on your phone. Bookmark it. Done.
+Two upstream fetches, each cached at the Next.js fetch layer for 1 hour, recomputed in-memory each SSR. The page itself is ISR (`export const revalidate = 3600`) so static visitors hit a CDN edge cache, then the underlying data refreshes at most once per hour.
+
+> Supersedes 2026-05-23 plan (Mac ingestor + Turso + pi-chrome). See `implementation-notes/2026-05-28-stateless-refactor.html` for the decision log.
 
 ---
 
-## 4. Data model
+## §3. Sources
 
-Same schema, hosted on Turso instead of a local file. All dates bucketed in `America/Los_Angeles`.
+### GitHub — GraphQL `contributionsCollection`
 
-```sql
-CREATE TABLE daily_count (
-  channel    TEXT NOT NULL,    -- 'github' | 'twitter'
-  date       TEXT NOT NULL,    -- 'YYYY-MM-DD' in America/Los_Angeles
-  count      INTEGER NOT NULL DEFAULT 0,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (channel, date)
-);
+- Endpoint: `POST https://api.github.com/graphql`
+- Auth: PAT with `read:user` (private contribs included).
+- Window: 365 days, calendar-aligned to PT. We send an ISO window with a 1-day leading/trailing buffer (so PT midnights are fully covered), then trim back to the displayed `[from, to]` PT range in-memory.
+- Cache: `next: { revalidate: 3600 }`.
+- Cost: 1 GraphQL call per cache miss. GitHub limits = 5000/hr per token — irrelevant at this volume.
 
-CREATE TABLE event (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  channel    TEXT NOT NULL,
-  ts         INTEGER NOT NULL, -- unix ms
-  ref        TEXT,             -- commit sha / tweet id
-  payload    TEXT,             -- json: { url, text, title, repo }
-  UNIQUE(channel, ref)
-);
+### X / Twitter — Nitter RSS, fallback chain
 
-CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT);  -- last_sync, schema_version, ingestor_health
-```
+- Hosts tried in order: `xcancel.com` → `nitter.privacyredirect.com` → `nitter.poast.org`.
+- URL: `https://<host>/<handle>/rss`.
+- Auth: none.
+- Parse: regex extract `<pubDate>` per `<item>` (Atom `<published>` fallback). Bucket each into a PT `YYYY-MM-DD` key via `Intl.DateTimeFormat('en-CA', { timeZone: tz, ... })`.
+- Cache: `next: { revalidate: 3600 }`.
+- Failure: all hosts dead → `TwitterFeedOfflineError` → snapshot substitutes a zero-filled day array and logs a warning. Dashboard stays up; the X panel renders empty.
+- **Honest limitation:** Nitter RSS only surfaces the most recent ~20 tweets. The X heatmap fills out as far back as the feed reaches — for daily posters that's the past 1–3 weeks. Older squares stay grey. We do not lie about this; the streak math operates over the data we actually see.
 
-Streaks are computed at read-time from `daily_count` — no denormalization.
+The official X API v2 free tier read access is dead. The syndication profile endpoint is cookie-gated and non-chronological in 2026. Nitter RSS is the only working unauth source for "give me a handle's recent tweets." See `scout-twitter-syndication.md` for the detailed research.
 
 ---
 
-## 5. Streak engine
+## §4. Streak rules
 
-Configurable per channel + a **combined streak in AND mode** (both channels required to keep the combined streak alive — your call, the harder mode).
-
-```
-ship_day(channel, date) := daily_count[channel][date] >= 1
-combined_ship_day(date) := ship_day('github', date) AND ship_day('twitter', date)
-current_streak(channel) := count consecutive ship_days ending at today,
-                           ignoring today if it's before cutoff_time (default 06:00 LA).
-longest_streak(channel) := max run in the last 365 days.
-```
-
-Day boundary = midnight `America/Los_Angeles`. No grace period in v1 — miss a day on either channel, combined streak resets to 0. Gym discipline.
+- A day "ships" when `count >= 1`.
+- Day keys are `YYYY-MM-DD` in `NERV_TZ` (default `America/Los_Angeles`).
+- Per-channel:
+  - `current` — walks backward from today across consecutive ship days. Today not yet shipped breaks the streak (no grace period).
+  - `longest` — single pass over the visible window.
+- Combined (`combined.mode = "and"`): a day counts only if **both** channels shipped.
+- All math lives in `apps/web/src/lib/streak.ts` (pure, zero I/O).
 
 ---
 
-## 6. Build phases
+## §5. Files
 
-### Phase 1 — Skeleton + GitHub (Day 1, ~3-4h)
-- [ ] `pnpm create next-app`, Tailwind, NERV theme tokens
-- [ ] SQLite schema, migrations runner
-- [ ] GitHub ingestor (GraphQL `contributionsCollection`) + `pnpm ingest:github`
-- [ ] `/api/snapshot` returns `{ github: { days, streak, longest } }`
-- [ ] Bare heatmap component (correct shape, no skin yet)
+```
+apps/web/
+├── next.config.mjs         # tiny — reactStrictMode only
+├── package.json            # next, react, tailwind. no libsql, no workspace deps
+├── postcss.config.js
+├── tailwind.config.ts      # NERV palette
+└── src/
+    ├── app/
+    │   ├── layout.tsx
+    │   ├── page.tsx        # SSR; export const revalidate = 3600
+    │   ├── globals.css     # CRT scanlines, palette
+    │   └── api/
+    │       └── snapshot/
+    │           └── route.ts  # GET /api/snapshot?days=N
+    └── lib/
+        ├── streak.ts       # pure math + tz helpers
+        ├── github.ts       # GraphQL fetch + buffer/trim
+        ├── twitter.ts      # Nitter RSS fallback chain
+        ├── snapshot.ts     # composes everything; returns wire shape
+        ├── heatmap.ts      # toWeeksGrid, intensity
+        └── nerv/
+            ├── MagiPanel.tsx
+            └── Heatmap.tsx
+```
 
-### Phase 2 — Twitter ingestor via pi-chrome (Day 2, ~3-4h)
-- [ ] Confirm pi-chrome is onboarded + you're signed into x.com in that Chrome profile.
-- [ ] Write `packages/ingest/src/twitter/scrape.js` — the `chrome_evaluate` payload that reads `article[data-testid="tweet"]` from `https://x.com/anishthite`, returns `[{id, ts_iso, text_snippet}]`.
-- [ ] Wire `packages/ingest/src/twitter/pi-chrome.ts` — spawns `pi --prompt` with a one-shot script that runs the scrape and emits JSON to stdout. Parse → upsert.
-- [ ] LLM fallback: when fast path returns 0 results twice in a row, escalate to `chrome_snapshot` + Claude Haiku extraction. Keep prompt + schema in `twitter/llm-extract.ts`.
-- [ ] Always wire the **`ship` CLI** (`ship tweet "<url>"`, `ship note "<text>"`) for manual entries when Chrome's not available.
-- [ ] Health row in `meta`: `twitter_last_ok_ts`, `twitter_consecutive_failures`. Surface in dashboard status bar.
-
-### Phase 3 — NERV skin (Day 2-3, ~4-6h)
-- [ ] Layout: dual MAGI panels, top bar, bottom status bar
-- [ ] Heatmap recolor + cell tooltip (date · count · refs)
-- [ ] Big streak numbers, glow effect
-- [ ] CRT scanlines + vignette overlay
-- [ ] Hex-clipped panel borders (SVG mask or `clip-path`)
-- [ ] Rotating status messages, ticking clock
-
-### Phase 4 — Nudge system (Day 3, ~1-2h)
-- [ ] launchd job fires at 18:00 PT — runs ingest + checks `combined_ship_day(today)`.
-- [ ] If false: macOS notification (`terminal-notifier` or `osascript`) — `PATTERN RED // SHIPMENT REQUIRED`.
-- [ ] Second check at 23:00 PT — if still false, escalate: louder notification + dashboard auto-renders full-screen red takeover.
-- [ ] If shipped on both: quiet `SYNCHRONIZATION COMPLETE` line at the bottom of the status bar. No confetti.
-
-### Phase 5 — Polish (later)
-- [ ] Tauri wrap → always-on-top widget mode
-- [ ] Per-day drill-down panel (list of commits + tweets for that day)
-- [ ] Longest-streak history graph
-- [ ] Optional: weekly Sunday email "MAGI Weekly Synopsis"
+No `packages/`. Single-app workspace.
 
 ---
 
-## 7. Repo layout (target)
+## §6. Environment variables
 
-```
-commiter/
-  apps/web/                       # Next.js app → Vercel
-    src/app/page.tsx              # NERV dashboard
-    src/app/api/snapshot/route.ts # reads Turso, returns Snapshot
-    src/lib/nerv/{Heatmap,Streak,StatusBar,RedAlert,ScanlineOverlay}.tsx
-    src/lib/nerv/theme.ts         # NERV color tokens, scanline CSS
-  packages/ingest/                # Node CLI, runs on Mac
-    src/github.ts                 # GraphQL contributionsCollection
-    src/twitter/
-      pi-chrome.ts                # spawns `pi --prompt`, parses JSON
-      scrape.js                   # chrome_evaluate payload (DOM → JSON)
-      llm-extract.ts              # snapshot → LLM → JSON (fallback)
-      self-report.ts              # ship CLI handler
-    src/streak.ts                 # pure streak math (unit-tested)
-    src/db.ts                     # libSQL client (local file OR Turso)
-    bin/ingest.ts                 # `ingest [--channel=github|twitter|all]`
-    bin/ship.ts                   # `ship tweet|note|commit "..."`
-  scripts/launchd/
-    com.nerv.ingest.plist         # 15-min ingest cron
-    com.nerv.nudge.plist          # 18:00 + 23:00 PT checks
-  data/ship.local.db              # local dev only, gitignored
-  .env.example                    # GITHUB_TOKEN, TURSO_URL, TURSO_TOKEN, NERV_PILOT_TOKEN, ANTHROPIC_API_KEY (optional)
-  implementation-notes/
-  PLAN.md
-```
+| Var | Required | Notes |
+|---|---|---|
+| `GITHUB_TOKEN` | **yes** | PAT with `read:user`. Private contribs require it. |
+| `GITHUB_LOGIN` | optional | Defaults to `anishthite`. |
+| `X_LOGIN` | optional | Handle without `@`. If unset, X panel renders empty. |
+| `NERV_TZ` | optional | IANA tz. Defaults to `America/Los_Angeles`. |
+| `NERV_PILOT_TOKEN` | optional | Reserved for future cookie-gated dashboard auth. |
+
+Set in `apps/web/.env.local` for dev. Set as Vercel project env vars for prod.
 
 ---
 
-## 8. Resolved decisions (from your input)
+## §7. Followups (deferred, not part of v0)
 
-| # | Decision |
-|---|---|
-| Twitter source | **pi-chrome** driving your signed-in Chrome session. DOM scrape primary, small-LLM fallback. `ship` CLI as manual backstop. |
-| GitHub identity | `anishthite`. Private contribs counted → need PAT with `read:user`. |
-| Deploy | **Vercel** (frontend) + **Turso** (libSQL, hosted). Ingestor stays local on Mac. |
-| Combined streak | **AND** — both channels must ship that day to keep the combined streak alive. |
-| Timezone | `America/Los_Angeles`. |
-| Nudge | macOS notification at 18:00 PT; full-screen red takeover at 23:00 PT if still nothing. |
-| Grace period | **None** in v1. |
+- **L-001** — Manual ship fallback: `POST /api/ship` + an in-dashboard button. Useful when Nitter is fully dark and you want to mark "yes I posted" without waiting for the feed to come back.
+- **L-002** — Nudge mechanism: Vercel Cron at e.g. 18:00 + 23:00 PT hitting an `/api/nudge` route that pings Pushover / Resend / a Slack webhook when today is empty.
+- **L-003** — Twitter history depth: Vercel Cron hourly + Upstash Redis free tier persisting `{date, count}` daily rollups, so the X heatmap fills out beyond the Nitter window. Pure additive change.
+- **L-004** — Build-time prerender wart: page is statically generated at build time with whatever data the build environment can reach. If `GITHUB_TOKEN` isn't set during the Vercel build, the SYS:FAULT branch gets baked in for up to an hour after deploy. Mitigations: set env at build, or flip `page.tsx` back to `force-dynamic` (fetch caching still works).
 
-## 9. Still need from you
+---
 
-Before Phase 1 I need:
-
-1. **GitHub PAT** — create one at https://github.com/settings/tokens?type=beta with `read:user` + `repo` (for private contrib visibility). Drop it in a `.env` once we have the repo scaffolded; no need to share it in chat.
-2. **`/chrome onboard` complete** — confirm `/chrome doctor` is green in a Pi session and you're signed into x.com on that Chrome profile.
-3. **Anthropic API key** (optional, only if you want the LLM fallback path; can also use local Ollama or skip).
-4. **Turso account** — sign up at turso.tech (free), I'll generate the DB and give you the two env vars to set in Vercel.
-5. **Go-ahead** to start Phase 1.
-
-The moment you've got #1, #2, and #5 I start scaffolding the repo and writing the GitHub ingestor.
+_Plan supersedes the 2026-05-23 Turso/pi-chrome architecture. Decision log: `implementation-notes/2026-05-28-stateless-refactor.html`._

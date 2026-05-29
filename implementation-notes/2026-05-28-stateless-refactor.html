@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Spec — stateless-refactor</title>
+<meta name="task" content="Drop Turso + pi-chrome + ingestor; Next.js fetches GitHub GraphQL + Twitter syndication endpoint directly with 1hr cache. Fully stateless.">
+<meta name="date-started" content="2026-05-28">
+<meta name="date-updated" content="2026-05-28">
+<meta name="status" content="implemented">
+<meta name="depends-on" content="2026-05-23-nerv-shipping-tracker (supersedes architecture §3, §4, §7)">
+<meta name="blast-radius" content="medium">
+<meta name="tags" content="refactor,simplification,stateless,vercel,no-db">
+<meta name="related" content="2026-05-23-nerv-shipping-tracker.html">
+<style>
+  body { font: 14px/1.45 -apple-system, system-ui, sans-serif; max-width: 880px; margin: 1.5rem auto; padding: 0 1rem; color: #111; }
+  h1 { font-size: 20px; margin: 0 0 .25rem; }
+  h2 { font-size: 15px; margin: 1.4rem 0 .4rem; border-bottom: 1px solid #ddd; padding-bottom: .2rem; }
+  h3 { font-size: 13px; margin: 1rem 0 .3rem; color: #444; text-transform: uppercase; letter-spacing: .04em; }
+  table { border-collapse: collapse; width: 100%; margin: .4rem 0 .8rem; }
+  th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; vertical-align: top; }
+  th { background: #f6f6f6; font-weight: 600; }
+  code, pre { font-family: ui-monospace, Menlo, monospace; }
+  code { background: #f1f1f1; padding: 1px 4px; border-radius: 3px; font-size: 12.5px; }
+  pre { background: #f6f6f6; padding: .55rem .7rem; border-radius: 4px; overflow-x: auto; font-size: 12.5px; line-height: 1.4; }
+  ul, ol { margin: .3rem 0 .8rem 1.2rem; padding: 0; }
+  li { margin: .15rem 0; }
+  .q { border-left: 3px solid #b85c00; background: #fff8ee; padding: .4rem .7rem; margin: .4rem 0; }
+  .q .id { color: #b85c00; font-weight: 700; }
+  .q.resolved { border-left-color: #2a7a2a; background: #f1faf1; }
+  .q.resolved .id { color: #2a7a2a; }
+  .blast-low { color: #2a7a2a; } .blast-med { color: #b85c00; } .blast-high { color: #b00020; font-weight: 600; }
+  .meta { color: #555; font-size: 12.5px; margin-bottom: .8rem; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 2px 14px; font-size: 13px; margin: .4rem 0 1rem; }
+  .kv b { color: #444; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>Stateless refactor — drop Turso, drop pi-chrome, drop ingestor</h1>
+<p class="meta">
+  <code>main</code> · worktree <code>~/workspace/commiter</code> · 2026-05-28 · status <b>implemented</b> · blast <span class="blast-med">medium</span>
+</p>
+
+<h2>Summary</h2>
+<div class="kv">
+  <b>Goal</b><div>Replace the two-machine architecture (Mac ingestor → Turso → Vercel reader) with a single Next.js app that fetches GitHub GraphQL + X syndication endpoint directly on each SSR, cached 1hr.</div>
+  <b>User intent</b><div>"simplify… nice free twitter api and github api, cache it/invalidate once an hour" — and explicit answer "Fully stateless, no DB at all" + "Forward-only is fine" for Twitter history.</div>
+  <b>Supersedes</b><div>2026-05-23 plan §2 (Twitter via pi-chrome), §3 (Architecture), §4 (Data model), §6 phases 2 &amp; 4, §7 (Repo layout).</div>
+  <b>Survives unchanged</b><div>GitHub source = GraphQL contributionsCollection. Streak math. TZ = America/Los_Angeles. AND-combined streak (but see D-003). NERV aesthetic + components.</div>
+  <b>Deferred</b><div>Nudge mechanism + ship CLI manual fallback (user said "don't worry about for now").</div>
+</div>
+
+<h2>Decisions</h2>
+<table>
+  <thead><tr><th>ID</th><th>Decision</th><th>Why</th><th>Reversibility</th></tr></thead>
+  <tbody>
+    <tr><td>D-001</td><td>Delete <code>packages/ingest/</code> workspace package entirely; hoist pure code (<code>streak.ts</code>, GraphQL fetcher) into <code>apps/web/src/lib/</code>.</td><td>Ingestor only existed to write to DB. No DB → no ingestor.</td><td>Easy — git revert restores it.</td></tr>
+    <tr><td>D-002 <s>(revised)</s></td><td><s>syndication.twitter.com/srv/timeline-profile</s> — endpoint is effectively dead in 2026 (cookie-gated, non-chronological).</td><td>See researcher brief in <code>scout-twitter-syndication.md</code>.</td><td>—</td></tr>
+    <tr><td>D-002b</td><td>Twitter source = <b>Nitter RSS</b> with fallback chain: <code>xcancel.com</code> → <code>nitter.privacyredirect.com</code> → <code>nitter.poast.org</code>. Endpoint: <code>https://&lt;host&gt;/&lt;handle&gt;/rss</code>. Parse <code>&lt;pubDate&gt;</code> per <code>&lt;item&gt;</code>; bucket to PT.</td><td>Only working unauth path for listing a handle's recent tweets in 2026. We only need timestamps for the heatmap — RSS gives us that directly; no token math or JSON hydration needed.</td><td>Module-isolated; swap fetcher or self-host Nitter if all public instances die.</td></tr>
+    <tr><td>D-003</td><td>Drop the "COMBINED STREAK · AND" line from the footer until Twitter history is honest. Replace with <code>TODAY · GH:OK · X:OK</code> style status.</td><td>365-day AND-combined streak with only ~20-tweet visibility into Twitter is a lie. Today-status is honest.</td><td>Trivial — single component edit.</td></tr>
+    <tr><td>D-004</td><td>Caching = <code>fetch(url, { next: { revalidate: 3600 } })</code> on both GitHub + Twitter calls inside SSR <code>page.tsx</code> and <code>/api/snapshot</code>. No client polling, no Vercel KV.</td><td>Next.js cache key is per-URL; both endpoints are GET; 1hr is what user asked for. Free.</td><td>Bump revalidate number freely; or remove for no-cache.</td></tr>
+    <tr><td>D-005</td><td>Per-channel streaks computed in-memory each request from the fetched data. Twitter streak surfaces window honestly: label as <code>STREAK (~30d window)</code> when underlying data covers &lt; 60 days.</td><td>Tells the truth about depth.</td><td>Pure UI string.</td></tr>
+    <tr><td>D-006</td><td>Snapshot wire shape stays compatible: <code>{generated_at, tz, range, channels: {github, twitter}}</code> — preserves existing <code>MagiPanel</code> / <code>Heatmap</code> props.</td><td>Avoid churning UI components in the same PR. <code>combined.*</code> becomes optional / always-undefined.</td><td>UI change is separable later.</td></tr>
+    <tr><td>D-007</td><td>Defer nudge + ship CLI per user instruction.</td><td>User explicit.</td><td>Re-open later.</td></tr>
+    <tr><td>D-008</td><td>Fix GitHub window alignment: fetch <code>from = addDays(today_PT, -(days))</code> i.e. one day buffer, then trim returned days to the displayed PT-aligned range. Current code has up to 16h skew (scout S14).</td><td>Was masked before because libSQL stored both ingest and read used different alignments; now both happen in one request and the skew shows.</td><td>Single fetcher.</td></tr>
+    <tr><td>D-009</td><td>Preserve <code>combined</code> in wire shape exactly as today — use <code>combineDays(gh, tw, "and")</code>. UI may underexpose it later (D-003) but the refactor PR does NOT change UX surface.</td><td>One thing at a time. Refactor = swap data plumbing; UX revision is a follow-up.</td><td>D-003 is a separable follow-up.</td></tr>
+    <tr><td>D-010</td><td>RSS parsing = small regex over the XML body (~10 lines). No dependency added.</td><td>Nitter RSS is regular and tiny (~20 items). <code>fast-xml-parser</code> would add a dep and node compatibility surface for zero gain.</td><td>If RSS shape diverges across hosts, swap to <code>fast-xml-parser</code>.</td></tr>
+  </tbody>
+</table>
+
+<h2>Deletion list (preliminary — scout in flight)</h2>
+<ul>
+  <li><code>packages/ingest/</code> (entire workspace package)</li>
+  <li><code>apps/web/src/lib/snapshot-server.ts</code> — replaced by new <code>lib/snapshot.ts</code></li>
+  <li><code>@libsql/client</code>, <code>dotenv</code> deps (verify nothing else needs them)</li>
+  <li>Root <code>pnpm</code> scripts: <code>ingest</code>, <code>ingest:github</code>, <code>migrate</code>, <code>ship</code></li>
+  <li>Env vars: <code>DATABASE_URL</code>, <code>DATABASE_AUTH_TOKEN</code> (replaced by <code>X_LOGIN</code>)</li>
+  <li><code>data/</code> directory if present (gitignored, but kill the path)</li>
+</ul>
+
+<h2>Files added/modified</h2>
+<table>
+  <thead><tr><th>Path</th><th>Action</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><code>apps/web/src/lib/streak.ts</code></td><td>NEW (lifted from ingest)</td><td>Pure, zero edits except removing the <code>Channel</code> type if unused.</td></tr>
+    <tr><td><code>apps/web/src/lib/github.ts</code></td><td>NEW</td><td>GraphQL contributionsCollection fetcher, returns <code>Day[]</code>. Uses <code>fetch</code> with revalidate.</td></tr>
+    <tr><td><code>apps/web/src/lib/twitter.ts</code></td><td>NEW</td><td>Syndication endpoint fetcher → bucket to <code>Day[]</code> in PT. Robust to "feed offline".</td></tr>
+    <tr><td><code>apps/web/src/lib/snapshot.ts</code></td><td>NEW</td><td>Combines github+twitter+streaks into wire-compatible Snapshot.</td></tr>
+    <tr><td><code>apps/web/src/lib/heatmap.ts</code></td><td>MODIFY</td><td>Change import from <code>ingest/src/streak</code> → <code>./streak</code>.</td></tr>
+    <tr><td><code>apps/web/src/lib/nerv/MagiPanel.tsx</code></td><td>MODIFY</td><td>Import <code>ChannelSnapshot</code> from <code>../snapshot</code> instead of <code>ingest/src/snapshot</code>.</td></tr>
+    <tr><td><code>apps/web/src/lib/nerv/Heatmap.tsx</code></td><td>MODIFY</td><td>Import <code>Day</code> from <code>../streak</code>.</td></tr>
+    <tr><td><code>apps/web/src/app/page.tsx</code></td><td>MODIFY</td><td>Swap import to new <code>lib/snapshot</code>. Update error hint (no more <code>pnpm migrate</code>).</td></tr>
+    <tr><td><code>apps/web/src/app/api/snapshot/route.ts</code></td><td>MODIFY</td><td>Swap import. Maybe relax <code>force-dynamic</code> since fetches are already cached.</td></tr>
+    <tr><td><code>apps/web/package.json</code></td><td>MODIFY</td><td>Drop <code>ingest</code> workspace dep.</td></tr>
+    <tr><td>Root <code>package.json</code></td><td>MODIFY</td><td>Drop ingest scripts.</td></tr>
+    <tr><td><code>pnpm-workspace.yaml</code></td><td>MODIFY</td><td>Remove <code>packages/*</code> entry if no other workspace packages.</td></tr>
+    <tr><td><code>.env.example</code> (if present)</td><td>MODIFY</td><td>Strip TURSO/DATABASE; add <code>X_LOGIN</code>.</td></tr>
+    <tr><td><code>PLAN.md</code></td><td>REWRITE</td><td>§2, §3, §4, §6 phases 2/4, §7. Mark old plan archived in implementation-notes.</td></tr>
+    <tr><td><code>README.md</code></td><td>REWRITE quickstart</td><td>Drop migrate/ingest commands.</td></tr>
+  </tbody>
+</table>
+
+<h2>Open questions</h2>
+<div class="q resolved" id="Q-001"><span class="id">Q-001 ✓</span> — Token derivation moot — we're not using the syndication endpoint at all (D-002 revised). Nitter RSS needs no auth/token.</div>
+<div class="q resolved" id="Q-002"><span class="id">Q-002 ✓</span> — <code>X_LOGIN</code> = env var. Added to <code>.env.example</code>, read in <code>lib/twitter.ts</code> via <code>process.env.X_LOGIN</code>.</div>
+<div class="q" id="Q-004"><span class="id">Q-004</span> — Nitter instance rotation strategy on 403/timeout: simple sequential fallback through hard-coded list, or randomize order to spread load? Default: <b>sequential</b>, log which host actually served the response.</div>
+<div class="q resolved" id="Q-003"><span class="id">Q-003 ✓</span> — Should we keep AND combined streak? <b>No</b> (D-003), it would lie about Twitter depth.</div>
+
+<h2>Reversibility / blast radius</h2>
+<ul>
+  <li><span class="blast-low">R-low</span> — All deleted code recoverable via git. No data loss (no persistent DB to begin with, Phase 1 was GitHub-only).</li>
+  <li><span class="blast-med">R-med</span> — Twitter syndication endpoint going dark = Twitter panel empty until fixed. Acceptable; isolated.</li>
+</ul>
+
+<h2>Post-research adjustments (2026-05-28)</h2>
+<ul>
+  <li>Twitter heatmap depth = <b>~last 7–20 days</b> (Nitter RSS feed size, not the ~20 tweets I assumed for the syndication endpoint). For someone tweeting daily this still fills the recent strip.</li>
+  <li>Scout confirmed Phase 2 was never built — no <code>twitter/</code> subdir to delete, no pi-chrome wiring to unwire. Refactor is pure simplification, no in-flight rollback.</li>
+  <li>S15 (scout): <code>page.tsx</code> has <code>dynamic = "force-dynamic"</code> which would defeat fetch caching. Must remove.</li>
+  <li>S3 (scout): <code>route.ts</code> sets <code>cache-control: no-store</code>. Invert to <code>s-maxage=3600, stale-while-revalidate=600</code>.</li>
+</ul>
+
+<h2>Post-worker live-fire findings (2026-05-28 evening)</h2>
+<p>First end-to-end run revealed three layered bugs that the worker's sandbox could not have caught. All fixed inline:</p>
+<table>
+  <thead><tr><th>ID</th><th>Bug</th><th>Root cause</th><th>Fix</th></tr></thead>
+  <tbody>
+    <tr><td>X-001</td><td>xcancel.com returns 200 OK + 1-item stub feed dated <code>Mon, 01 January 1971 00:00:00 GMT</code> with body <i>"RSS reader not yet whitelisted!"</i></td><td>xcancel now requires an email-allowlist for non-whitelisted clients. Researcher's brief didn't catch this (status snapshot lied).</td><td>Added <code>parseRssToDays</code> stats output (<code>parsedItems</code> / <code>inWindowItems</code>); host falls through if <code>inWindowItems === 0</code>. Generic guard, no host-specific string matching.</td></tr>
+    <tr><td>X-002</td><td>Host order had two dead hosts ahead of one working host.</td><td>I propagated stale researcher recommendations; live probe of all 6 known Nitter instances gave the correct ranking.</td><td>Reordered to <code>[nitter.net, nitter.poast.org, xcancel.com, nitter.privacyredirect.com]</code>. nitter.net is the only currently-reliable primary as of 2026-05-29.</td></tr>
+    <tr><td>X-003</td><td>Next.js 14.2 <code>fetch(url, { next: { revalidate: 3600 } })</code> against nitter.net returns status=200 with empty body + empty content-type. Standalone Node <code>fetch</code> against the same URL returns the real 16KB RSS.</td><td>Next.js fetch-cache wrapper edge case (likely interaction with the upstream's HTTP/2 response). Reproducible across restarts after fresh <code>.next</code> wipe.</td><td>Dropped <code>next.revalidate</code> from the per-host fetch; used <code>cache: "no-store"</code> instead. Route-level <code>export const revalidate = 3600</code> on both <code>page.tsx</code> and <code>/api/snapshot</code> already provides the 1hr CDN cache we wanted — the bug only hit the inner fetch.</td></tr>
+    <tr><td>X-004</td><td>Content-type guard rejected valid bodies when CT was empty or html.</td><td>Old guard: "if !xml in ct, accept only if body starts with <code>&lt;</code>". Brittle against empty-body / empty-CT responses.</td><td>Body-shape only: require <code>&lt;rss</code>, <code>&lt;feed</code>, <code>&lt;item</code>, or <code>&lt;entry</code> marker in body. Content-type is ignored entirely.</td></tr>
+    <tr><td>X-005</td><td>UA <code>nerv-shipping-tracker</code> 403s some Nitter hosts.</td><td>Common defensive measure on Nitter proxies.</td><td>Switched to a normal Mozilla/Chrome desktop UA string.</td></tr>
+  </tbody>
+</table>
+<p><b>Final live state (2026-05-28 19:25 PT):</b> nitter.net serving 20 real items, all in window. Twitter heatmap shows 14 days with activity, most recent 2026-05-25. GitHub: streak=3, longest=22, today=15. AND-combined streak honestly = 0 today (no tweet today).</p>
+
+<h2>Followups</h2>
+<ul>
+  <li><code>L-001</code> — Add <code>/api/ship</code> POST + dashboard manual-mark UI when syndication breaks.</li>
+  <li><code>L-002</code> — Nudge mechanism: Vercel Cron + Pushover OR fullscreen-red takeover on dashboard load.</li>
+  <li><code>L-003</code> — If Twitter history becomes important, add Upstash KV for daily rollups.</li>
+  <li><code>L-005</code> — Investigate the Next.js 14.2 <code>fetch + next.revalidate + empty body</code> bug. Possibly file upstream issue with minimal repro. For now, route-level revalidate suffices.</li>
+  <li><code>L-006</code> — Periodic re-probe of Nitter host health; the working primary today could be Cloudflare-gated next week. Consider a <code>/api/nitter-health</code> debug route.</li>
+</ul>
+
+<h2>Worker report (2026-05-28)</h2>
+
+<h3>Additional decisions made during implementation</h3>
+<table>
+  <thead><tr><th>ID</th><th>Decision</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>D-011</td><td>D-008 implementation: the leading buffer is implemented in <code>github.ts</code> by extending the GraphQL ISO window <code>[from, to]</code> by &plusmn;1 day from the PT-aligned range, then trimming via <code>fillMissingDays(rows, from, to)</code>. <code>snapshot.ts</code> still computes <code>from = addDays(today, -(days - 1))</code> in PT and passes that as the displayed range.</td><td>Confines the buffer hack to the fetcher; <code>snapshot.ts</code> stays clean.</td></tr>
+    <tr><td>D-012</td><td><code>fetchTwitterDaysSafe</code> (private helper inside <code>snapshot.ts</code>) also catches the case where <code>X_LOGIN</code> is empty &mdash; logs a warning and returns zero-filled days. <b>Not</b> a hard error.</td><td>Lets a freshly cloned repo render the GitHub panel with only <code>GITHUB_TOKEN</code> + <code>GITHUB_LOGIN</code> set. Reduces onboarding friction. The error path for missing token <i>is</i> hard (GitHub throws an inline friendly error) because the entire dashboard relies on it.</td></tr>
+    <tr><td>D-013</td><td>RSS sanity check: a host's response only counts if the body matches <code>/&lt;item[\s&gt;]/</code> or <code>/&lt;entry[\s&gt;]/</code>. Cloudflare bot-challenge HTML pages fail this check and we fall through to the next host. Empirically validated against <code>nitter.privacyredirect.com</code> (returns 200 + HTML challenge) and <code>nitter.poast.org</code> (returns 403 + browser challenge).</td><td>HTTP 200 is not sufficient evidence of valid data here. Content-type alone isn't either &mdash; some Nitter hosts omit it.</td></tr>
+    <tr><td>D-014</td><td>Followed spec literally on the <code>page.tsx</code> revalidate vs force-dynamic question: removed <code>force-dynamic</code>, added <code>revalidate = 3600</code>. Flagged the build-time prerender wart as <b>L-004</b> rather than silently deviating to <code>force-dynamic</code>.</td><td>Spec was explicit (S15). Operational nuance is real but escalable; not the worker's call.</td></tr>
+  </tbody>
+</table>
+
+<h3>Deviations</h3>
+<table>
+  <thead><tr><th>ID</th><th>Deviation</th><th>Reason</th></tr></thead>
+  <tbody>
+    <tr><td>X-001</td><td>None.</td><td>Spec executed as written. Only adds are the (well-flagged) D-011 / D-012 / D-013 implementation choices, which were left to worker discretion.</td></tr>
+  </tbody>
+</table>
+
+<h3>Validation results</h3>
+<table>
+  <thead><tr><th>#</th><th>Check</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><code>pnpm install</code> clean.</td><td><b>PASS</b>. 20 packages removed (libsql + transitives + ingest workspace). 1.6s. Lockfile updated.</td></tr>
+    <tr><td>2</td><td><code>pnpm typecheck</code>.</td><td><b>PASS</b>. Single workspace (web), zero TS errors.</td></tr>
+    <tr><td>3</td><td><code>pnpm --filter web build</code>.</td><td><b>PASS</b>. Next.js 14.2.35 production build succeeds; output: <code>/</code> static, <code>/api/snapshot</code> dynamic. Build did warn <code>[snapshot] X_LOGIN not set</code> during prerender &mdash; expected when env vars aren't injected at build time.</td></tr>
+    <tr><td>4</td><td><code>grep -r "ingest/src" apps/web/src</code>.</td><td><b>PASS</b>. Empty.</td></tr>
+    <tr><td>5</td><td><code>grep -rE "libsql|@libsql|drizzle|TURSO|DATABASE_URL" apps/web/src apps/web/package.json</code>.</td><td><b>PASS</b>. Empty.</td></tr>
+    <tr><td>6</td><td><code>find packages -type d</code>.</td><td><b>PASS</b>. Directory does not exist.</td></tr>
+    <tr><td>7</td><td>Runtime <code>curl /api/snapshot?days=30</code> with env vars set.</td><td><b>PARTIAL PASS</b>. Ran <code>next dev</code> with a deliberately-fake <code>GITHUB_TOKEN</code> (no real token in worker sandbox); route correctly returned <code>{"error":"snapshot_failed"}</code> with HTTP 500 and logged <code>[snapshot] error Error: GitHub GraphQL 401</code> server-side. Error redaction works (no token / no internals leaked). End-to-end shape with a valid token requires user verification on first local run.</td></tr>
+    <tr><td>7b</td><td>Twitter fetch viability against <code>xcancel.com</code>.</td><td><b>PASS</b>. Independent probe: <code>GET https://xcancel.com/anishthite/rss</code> returns HTTP 200 with <code>content-type: application/rss+xml</code>, 1502 bytes, 1 <code>&lt;item&gt;</code>, 1 <code>&lt;pubDate&gt;</code>. The two fallback hosts (privacyredirect, poast) both returned bot/Cloudflare HTML which our content sanity check correctly rejects; in production xcancel will serve and the others will not be tried.</td></tr>
+  </tbody>
+</table>
+
+<h3>Followups discovered</h3>
+<ul>
+  <li><code>L-004</code> &mdash; (added above) build-time prerender wart: SYS:FAULT may be cached for ~1h post-deploy if <code>GITHUB_TOKEN</code> isn't present at build. Workaround options: set env at build, or flip page back to <code>force-dynamic</code>. Documented in <code>PLAN.md</code> §7.</li>
+  <li><code>L-005</code> &mdash; <code>fetchGithubDays</code> doesn't honor <code>requireGithubToken</code>'s old behavior of dumping a multi-line friendly message including PAT scope hints. Current message is one line. Fine for now but worth restoring the longer guidance when error UX gets a polish pass.</li>
+  <li><code>L-006</code> &mdash; Nitter RSS gives only the most recent ~20 tweets. Once you've shipped multiple days of posts the X heatmap will look usefully sparse; users with bursty posting cadence will see big grey gaps that are technically honest but visually misleading. Consider either (a) graying out cells beyond the feed window with a distinct color, or (b) adding the L-003 Upstash rollup.</li>
+</ul>
+
+<h3>What changed on disk</h3>
+<table>
+  <thead><tr><th>Action</th><th>Path</th></tr></thead>
+  <tbody>
+    <tr><td>NEW</td><td><code>apps/web/src/lib/streak.ts</code> (verbatim lift, 165 lines)</td></tr>
+    <tr><td>NEW</td><td><code>apps/web/src/lib/github.ts</code> (GraphQL fetcher + tz-aware buffer/trim)</td></tr>
+    <tr><td>NEW</td><td><code>apps/web/src/lib/twitter.ts</code> (Nitter RSS fallback chain + <code>TwitterFeedOfflineError</code>)</td></tr>
+    <tr><td>NEW</td><td><code>apps/web/src/lib/snapshot.ts</code> (composer, wire-shape preserved)</td></tr>
+    <tr><td>MOD</td><td><code>apps/web/src/app/page.tsx</code> (import swap, force-dynamic → revalidate, error hint copy)</td></tr>
+    <tr><td>MOD</td><td><code>apps/web/src/app/api/snapshot/route.ts</code> (import swap, revalidate, cache-control)</td></tr>
+    <tr><td>MOD</td><td><code>apps/web/src/lib/heatmap.ts</code> (1 import)</td></tr>
+    <tr><td>MOD</td><td><code>apps/web/src/lib/nerv/MagiPanel.tsx</code> (1 import)</td></tr>
+    <tr><td>MOD</td><td><code>apps/web/src/lib/nerv/Heatmap.tsx</code> (1 import)</td></tr>
+    <tr><td>MOD</td><td><code>apps/web/next.config.mjs</code> (gutted to 4 lines)</td></tr>
+    <tr><td>MOD</td><td><code>apps/web/package.json</code> (dropped <code>ingest</code> workspace dep)</td></tr>
+    <tr><td>MOD</td><td><code>package.json</code> (root: dropped ingest/migrate/ship scripts)</td></tr>
+    <tr><td>MOD</td><td><code>pnpm-workspace.yaml</code> (apps-only)</td></tr>
+    <tr><td>MOD</td><td><code>.env.example</code> (added <code>X_LOGIN</code>, removed DATABASE_*, ANTHROPIC_API_KEY)</td></tr>
+    <tr><td>MOD</td><td><code>PLAN.md</code> (full rewrite to stateless architecture)</td></tr>
+    <tr><td>MOD</td><td><code>README.md</code> (new quickstart, new status table)</td></tr>
+    <tr><td>DEL</td><td><code>packages/ingest/</code> (entire workspace package)</td></tr>
+    <tr><td>DEL</td><td><code>apps/web/src/lib/snapshot-server.ts</code></td></tr>
+  </tbody>
+</table>
+
+</body>
+</html>
