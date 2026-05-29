@@ -3,23 +3,33 @@ import * as https from "node:https";
 import { dateKey, fillMissingDays, type Day } from "./streak";
 
 /**
- * Twitter source — syndication.twitter.com PRIMARY, Nitter RSS fallback.
+ * Twitter source ladder — rettiwt-api PRIMARY, syndication + Nitter fallbacks.
  *
- * D-018 (2026-05-29): live probe showed the prod failure mode was all 4
- * Nitter hosts blocked from Vercel egress IPs (DNS fail / Cloudflare
- * challenges / RSS allowlists). Meanwhile
- * `https://syndication.twitter.com/srv/timeline-profile/screen-name/<handle>`
- * returns a 427KB HTML page with `__NEXT_DATA__` embedding ~101 recent
- * tweets per handle, *with no cookies required*. That contradicts the
- * 2026-05 scout (which said the endpoint was cookie-gated) but matches
- * direct curl observation against handle=anishthite. We now treat it as
- * the primary source, falling through to the Nitter pool only if it
- * fails — same `TwitterFeedOfflineError` shape, attempts list now
- * includes the syndication attempt.
+ * D-024 (2026-05-29, late): the syndication.twitter.com source landed in
+ * D-018 "worked" but returned a curated/embed-widget timeline that lags
+ * the real feed by weeks-to-months. Cross-checked on @paulg / @sama /
+ * @dhh: their syndication "newest" tweets were 6–7 months stale even
+ * though they post daily. Endpoint behavior, not our bug — the endpoint
+ * exists to power embed widgets, not to serve a live chronological feed.
  *
- * We only need timestamps (heatmap counts per day); the syndication HTML
- * gives us `entries[].content.tweet.created_at` (legacy v1.1 format,
- * `new Date()`-parseable). Nitter's RSS `<pubDate>` is the fallback.
+ * Replacement primary: `rettiwt-api` v7 with a user-supplied API_KEY
+ * (base64'd auth cookies, obtained via the X Auth Helper browser
+ * extension and stored in the `X_RETTIWT_KEY` env var). It calls X's
+ * real internal `/UserTweets` GraphQL endpoint, returning the actual
+ * chronological timeline. Guest-mode was confirmed dead 2026-05-29 —
+ * returns "Not authorized" for `tweet.search` and a DataValidationError
+ * for `user.timeline` without an apiKey.
+ *
+ * Fallback ladder if rettiwt fails (or X_RETTIWT_KEY isn't set):
+ *   2. syndication.twitter.com (stale-but-something — better than zero)
+ *   3. Nitter RSS pool (rarely works from Vercel, but works in dev)
+ *   4. throw TwitterFeedOfflineError → snapshot.ts substitutes zero-fill
+ *
+ * Why keep syndication despite the staleness: when rettiwt is unset
+ * (e.g., fresh fork, no API_KEY) the dashboard still shows *something*
+ * meaningful instead of an empty heatmap. The choice is between "a few
+ * popular tweets from months ago" and "all zeros" — popular-tweets-only
+ * is honestly more useful than nothing.
  */
 
 // Nitter host order — fallback only. From Vercel egress these are
@@ -81,7 +91,36 @@ export async function fetchTwitterDays(opts: FetchTwitterOpts): Promise<Day[]> {
 
   const attempts: Array<{ host: string; reason: string }> = [];
 
-  // ---- 1. syndication.twitter.com (primary, ~101 tweets, no cookies) ----
+  // ---- 1. rettiwt-api (primary, chronological, needs X_RETTIWT_KEY) ----
+  const rettiwtKey = process.env.X_RETTIWT_KEY;
+  if (rettiwtKey) {
+    try {
+      const r = await fetchRettiwtDays(
+        rettiwtKey,
+        login,
+        tz,
+        from,
+        to
+      );
+      console.log(
+        `[twitter] using rettiwt-api for login=${login} ` +
+          `(parsed=${r.parsedItems}, in_window=${r.inWindowItems}, pages=${r.pages})`
+      );
+      return r.days;
+    } catch (err) {
+      attempts.push({
+        host: "rettiwt-api",
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  } else {
+    attempts.push({
+      host: "rettiwt-api",
+      reason: "X_RETTIWT_KEY env var not set (see README, falling through)",
+    });
+  }
+
+  // ---- 2. syndication.twitter.com (stale but unauth fallback) ----
   try {
     const synParsed = await fetchSyndicationProfile(
       login,
@@ -369,5 +408,95 @@ function parseRssToDays(body: string, tz: string, from: string, to: string): Par
     days: fillMissingDays(rows, from, to),
     parsedItems,
     inWindowItems,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// rettiwt-api (chronological, authenticated)
+// ---------------------------------------------------------------------------
+
+type RettiwtParsed = ParsedRss & { pages: number };
+
+/**
+ * Pull a user's chronological timeline via the rettiwt-api package,
+ * which under the hood calls X's internal `/UserTweets` GraphQL
+ * endpoint with the auth cookies encoded in `apiKey`.
+ *
+ * We paginate up to `MAX_PAGES` (or until we exceed the `from` window),
+ * whichever comes first. That bounds worst-case latency and X API cost
+ * for heavy tweeters while still covering the ~365-day heatmap window
+ * for normal tweet cadence.
+ */
+async function fetchRettiwtDays(
+  apiKey: string,
+  login: string,
+  tz: string,
+  from: string,
+  to: string
+): Promise<RettiwtParsed> {
+  // Dynamic import keeps rettiwt-api off the cold-start path when
+  // X_RETTIWT_KEY is unset (the surrounding code never calls in here).
+  const { Rettiwt } = await import("rettiwt-api");
+  const r = new Rettiwt({ apiKey });
+
+  // Step 1: resolve handle → numeric user id.
+  const userDetails = await r.user.details(login);
+  const userId = userDetails?.id;
+  if (!userId) {
+    throw new Error(`user.details returned no id for handle=${login}`);
+  }
+
+  // Step 2: paginate the timeline. Stop early once the oldest item in a
+  // page is already older than our `from` cutoff.
+  const MAX_PAGES = 5;
+  const fromBoundary = new Date(`${from}T00:00:00Z`).getTime();
+
+  const counts = new Map<string, number>();
+  let parsedItems = 0;
+  let inWindowItems = 0;
+  let cursor: string | undefined;
+  let pages = 0;
+
+  while (pages < MAX_PAGES) {
+    const tl = (await r.user.timeline(userId, undefined, cursor)) as {
+      list?: Array<{ createdAt?: string }>;
+      next?: { value?: string } | undefined;
+    };
+    const list = tl?.list ?? [];
+    if (list.length === 0) break;
+
+    let oldestInPageMs = Number.POSITIVE_INFINITY;
+    for (const t of list) {
+      const raw = t?.createdAt;
+      if (!raw) continue;
+      const d = new Date(raw);
+      const ms = d.getTime();
+      if (Number.isNaN(ms)) continue;
+      parsedItems++;
+      if (ms < oldestInPageMs) oldestInPageMs = ms;
+      const key = dateKey(d, tz);
+      if (key >= from && key <= to) inWindowItems++;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    pages++;
+
+    if (oldestInPageMs <= fromBoundary) break;
+    cursor = tl?.next?.value;
+    if (!cursor) break;
+  }
+
+  if (parsedItems === 0) {
+    throw new Error(
+      `rettiwt-api returned 0 parseable tweets (pages=${pages}); ` +
+        `likely expired X_RETTIWT_KEY or bad handle`
+    );
+  }
+
+  const rows = Array.from(counts, ([date, count]) => ({ date, count }));
+  return {
+    days: fillMissingDays(rows, from, to),
+    parsedItems,
+    inWindowItems,
+    pages,
   };
 }

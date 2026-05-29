@@ -38,10 +38,36 @@
   <tr><td class="id">T-016</td><td>Wider container breaks the &ldquo;mobile-first compact card&rdquo; aesthetic on tablet sizes (640–1024px) — stats jump from column to row at the <code>sm:</code> breakpoint (640px) while the heatmap stays the same width below. Acceptable: panels still read top-to-bottom as a coherent unit, just sparser.</td></tr>
 </table>
 
+<h2>Late pivot (same day, post-deploy verification)</h2>
+<p>Deployed; user reported the prod heatmap was missing the last ~4 months of tweets even though they had posted. Diagnosed by probing four daily-active control accounts via the same endpoint:</p>
+<table>
+  <tr><th>Handle</th><th>Syndication "newest" date</th></tr>
+  <tr><td>@paulg</td><td>2025-10-30 (7 months stale)</td></tr>
+  <tr><td>@sama</td><td>2025-11-14 (6 months stale)</td></tr>
+  <tr><td>@dhh</td><td>2025-10-20 (7 months stale)</td></tr>
+  <tr><td>@levelsio</td><td>2026-05-25 (1 in last 30d, this handle tweets ~20×/day)</td></tr>
+</table>
+<p>Conclusion: <code>syndication.twitter.com/srv/timeline-profile</code> serves a <strong>curated/cached embed-widget timeline</strong>, not a chronological live feed. It's not a rate-limit issue, not a fingerprint issue, not a query-param issue — it's the endpoint's literal job to surface ~100 "popular tweets" for widget embedding. Wrong tool for the "did I ship today?" use case.</p>
+<h3>Replacement decisions</h3>
+<table>
+  <tr><th>ID</th><th>What</th><th>Why</th></tr>
+  <tr><td class="id">D-024</td><td>Promote rettiwt-api v7 to PRIMARY Twitter source, demote syndication to fallback, keep Nitter as last-resort.</td><td>rettiwt-api hits X's real <code>/UserTweets</code> GraphQL via authenticated cookies. Chronological, real-time. Guest mode confirmed dead 2026-05-29 (DataValidationError on <code>user.timeline</code>, "Not authorized" on <code>tweet.search</code>) — a user-supplied API_KEY (base64'd auth cookies from X Auth Helper browser extension, stored in <code>X_RETTIWT_KEY</code>) is mandatory.</td></tr>
+  <tr><td class="id">D-025</td><td>Keep syndication as fallback even though it's stale.</td><td>When <code>X_RETTIWT_KEY</code> is unset (e.g., fresh fork, key not yet provisioned), "a few popular tweets from months ago" beats "all zeros forever." The user-visible failure mode is "recent days look quiet" instead of "this app is broken."</td></tr>
+  <tr><td class="id">D-026</td><td>Paginate up to 5 pages OR until oldest item in a page is older than the <code>from</code> cutoff, whichever comes first.</td><td>Bounds worst-case latency for heavy tweeters (~1000 tweets max scanned). For normal cadence this comfortably covers the 365-day heatmap window.</td></tr>
+</table>
+<h3>Tradeoffs (new)</h3>
+<table>
+  <tr><th>ID</th><th>Tradeoff</th></tr>
+  <tr><td class="id">T-017</td><td>API_KEY = base64'd live cookies. Treat it like a password. Vercel env vars are encrypted at rest, which is the right place. Documented this caveat prominently in <code>.env.example</code> so future-me doesn't shove it in a public repo.</td></tr>
+  <tr><td class="id">T-018</td><td>rettiwt-api is reverse-engineered against X internals. Twitter changes endpoint hashes every few months; the package author chases them. Expect ~quarterly version bumps. Acceptable for a hobby tracker; would not ship this for SLA-critical use.</td></tr>
+  <tr><td class="id">T-019</td><td>API_KEY expires when the user explicitly logs out of the X session that generated it. Refresh path is "redo the 2-minute extension flow." Documented in <code>.env.example</code>.</td></tr>
+</table>
+
 <h2>Open questions / followups</h2>
 <table>
   <tr><th>ID</th><th>Item</th></tr>
-  <tr><td class="id">L-015</td><td>If syndication endpoint ever fingerprints <code>node:https</code> too, fallback ladder is: rettiwt-api (guest token), then Bluesky (if user crossposts), then self-hosted Nitter. Pre-decided ranking so future-me doesn't relitigate.</td></tr>
+  <tr><td class="id">L-015</td><td>Original fallback ladder (rettiwt-api / Bluesky / self-hosted Nitter) <em>partially executed</em> same-day: rettiwt-api landed as primary in D-024. If rettiwt also fails (Twitter breaks the endpoint, X_RETTIWT_KEY revoked, etc.), next stops are: Bluesky <code>app.bsky.feed.getAuthorFeed</code> (if user crossposts) then self-hosted Nitter on Fly.io.</td></tr>
+  <tr><td class="id">L-018</td><td>The 2026-05 scout (<code>scout-twitter-syndication.md</code>) flagged syndication as cookie-gated; we initially disproved it (D-018) when the endpoint returned 200 unauthenticated, but the deeper failure mode (stale curated set, not live timeline) was missed by both the scout and the initial implementation — because the scout's primary question was "can we fetch unauth?" not "is the data fresh?". Lesson: include freshness probes in any future scout against anti-bot-defended endpoints.</td></tr>
   <tr><td class="id">L-016</td><td>The scout doc (<code>scout-twitter-syndication.md</code>) claimed syndication was &ldquo;cookie-gated / dead.&rdquo; That was wrong as of 2026-05-29. Either it was wrong when written, or Twitter relaxed the endpoint. Either way, the scout-then-verify pattern caught it. Worth noting that purely-LLM scouts of fast-moving anti-bot surfaces should always be re-probed with a real curl before being treated as authoritative.</td></tr>
   <tr><td class="id">L-017</td><td>The heatmap is currently week-major (vertical column of 52 weeks × 7 days, ~130px wide). With the page now <code>max-w-6xl</code>, there's room to make it day-major (GitHub-style: 52 columns × 7 rows). Not done in this pass; user only asked for stats horizontalization. Stays a candidate for a follow-up &ldquo;use the new horizontal real estate&rdquo; pass.</td></tr>
 </table>
