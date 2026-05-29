@@ -1,67 +1,107 @@
-import { getSnapshot } from "@/lib/snapshot-server";
+import { getSnapshot } from "@/lib/snapshot";
+import { getOneLiner } from "@/lib/oneliner";
 import { MagiPanel } from "@/lib/nerv/MagiPanel";
 
-export const dynamic = "force-dynamic";
+// Snapshot is fetched on the server with each underlying source cached
+// 1h at the Next.js fetch layer (D-004). Page-level revalidate aligns
+// the SSR render frequency with the data freshness window.
+export const revalidate = 3600;
 
 export default async function Page() {
   let snapshot;
+  let oneliner = "";
   let error: string | null = null;
   try {
     snapshot = await getSnapshot(365);
+    oneliner = await getOneLiner(snapshot);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
 
-  return (
-    <main className="min-h-screen p-8 max-w-6xl mx-auto">
-      <header className="flex items-baseline justify-between mb-8 border-b border-nerv-grid pb-4">
-        <h1 className="text-nerv-orange tracking-widest uppercase">
-          NERV // Central Dogma
-        </h1>
-        <div className="text-xs text-nerv-text/60 uppercase tracking-widest">
-          Shipping Tracker · v0
-        </div>
-      </header>
+  // "did we ship today?" answers YES iff BOTH channels shipped today
+  // (preserves the AND semantic of combined.streak_current).
+  const ghToday = snapshot?.channels.github.today_count ?? 0;
+  const xToday = snapshot?.channels.twitter.today_count ?? 0;
+  const shippedBoth = ghToday > 0 && xToday > 0;
 
-      {error && (
+  return (
+    <main className="min-h-screen px-4 py-8 sm:px-6 sm:py-12 max-w-3xl mx-auto">
+      {error ? (
         <div className="border border-nerv-warn text-nerv-warn p-4 mb-6 text-sm">
           <div className="uppercase tracking-widest mb-2">SYS:FAULT</div>
           <code className="font-mono text-xs whitespace-pre-wrap">{error}</code>
           <div className="mt-3 text-xs text-nerv-text/60">
-            Did you run <code className="text-nerv-amber">pnpm migrate</code> and{" "}
-            <code className="text-nerv-amber">pnpm ingest:github</code>?
+            Check <code className="text-nerv-amber">GITHUB_TOKEN</code>,{" "}
+            <code className="text-nerv-amber">GITHUB_LOGIN</code>, and{" "}
+            <code className="text-nerv-amber">X_LOGIN</code> in{" "}
+            <code className="text-nerv-amber">apps/web/.env.local</code>.
           </div>
         </div>
-      )}
+      ) : (
+        snapshot && (
+          <>
+            <header className="mb-8 sm:mb-10">
+              <h1 className="text-nerv-text/60 text-base sm:text-lg lowercase">
+                did we ship today?
+              </h1>
+              <div
+                className={
+                  "mt-2 text-6xl sm:text-7xl font-mono leading-none tabular-nums " +
+                  (shippedBoth ? "text-nerv-amber" : "text-nerv-orange")
+                }
+              >
+                {shippedBoth ? "yes." : "no."}
+              </div>
+              {oneliner && (
+                <p className="mt-3 text-sm sm:text-base text-nerv-text/70 lowercase font-mono">
+                  <span className="text-nerv-orange/60 mr-2">&gt;</span>
+                  {oneliner}
+                </p>
+              )}
+              <div className="mt-3 text-[11px] sm:text-xs uppercase tracking-widest text-nerv-text/50 flex gap-4 flex-wrap">
+                <span>
+                  github{" "}
+                  <span
+                    className={
+                      ghToday > 0 ? "text-nerv-amber" : "text-nerv-text/40"
+                    }
+                  >
+                    {ghToday > 0 ? `+${ghToday} commits` : "idle"}
+                  </span>
+                </span>
+                <span aria-hidden>·</span>
+                <span>
+                  x{" "}
+                  <span
+                    className={
+                      xToday > 0 ? "text-nerv-amber" : "text-nerv-text/40"
+                    }
+                  >
+                    {xToday > 0 ? `+${xToday} tweets` : "idle"}
+                  </span>
+                </span>
+              </div>
+            </header>
 
-      {snapshot && (
-        <>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <MagiPanel
-              name="MAGI-01"
-              subtitle="GitHub"
-              data={snapshot.channels.github}
-            />
-            <MagiPanel
-              name="MAGI-02"
-              subtitle="X / Twitter"
-              data={snapshot.channels.twitter}
-            />
-          </div>
-
-          <footer className="mt-8 pt-4 border-t border-nerv-grid flex items-baseline justify-between text-xs uppercase tracking-widest text-nerv-text/60">
-            <div>SYS:OK</div>
-            <div>
-              COMBINED STREAK{" "}
-              <span className="text-nerv-orange">
-                {String(snapshot.combined.streak_current).padStart(3, "0")}
-              </span>
-              {"  · "}
-              MODE {snapshot.combined.mode.toUpperCase()}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <MagiPanel
+                label="GITHUB"
+                unit="commits"
+                data={snapshot.channels.github}
+              />
+              <MagiPanel
+                label="X"
+                unit="tweets"
+                data={snapshot.channels.twitter}
+              />
             </div>
-            <div>{snapshot.generated_at.slice(11, 19)} UTC</div>
-          </footer>
-        </>
+
+            <footer className="mt-8 text-[10px] uppercase tracking-widest text-nerv-text/30">
+              {snapshot.generated_at.slice(0, 10)} ·{" "}
+              {snapshot.generated_at.slice(11, 16)}Z
+            </footer>
+          </>
+        )
       )}
     </main>
   );

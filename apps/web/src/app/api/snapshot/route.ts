@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
-import { getSnapshot } from "@/lib/snapshot-server";
+import { getSnapshot } from "@/lib/snapshot";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+// Underlying source fetches are cached 1h at the Next fetch layer (D-004).
+// Aligning the route revalidate keeps the cached JSON in sync with that
+// window.
+export const revalidate = 3600;
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -12,11 +15,13 @@ export async function GET(req: Request) {
   try {
     const snapshot = await getSnapshot(days);
     return NextResponse.json(snapshot, {
-      headers: { "cache-control": "no-store" },
+      headers: {
+        "cache-control": "public, s-maxage=3600, stale-while-revalidate=600",
+      },
     });
   } catch (e) {
     // Log the full error server-side; never echo it to the client —
-    // raw errors can include DB URLs, file paths, or PAT-related strings.
+    // raw errors can include tokens, file paths, or login strings.
     console.error("[snapshot] error", e);
     return NextResponse.json({ error: "snapshot_failed" }, { status: 500 });
   }

@@ -1,4 +1,4 @@
-import type { Day } from "ingest/src/streak";
+import type { Day } from "./streak";
 
 /**
  * Reshape a flat ascending day list into a GitHub-style 53x7 grid:
