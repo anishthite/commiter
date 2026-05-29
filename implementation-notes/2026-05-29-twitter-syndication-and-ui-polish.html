@@ -63,10 +63,31 @@
   <tr><td class="id">T-019</td><td>API_KEY expires when the user explicitly logs out of the X session that generated it. Refresh path is "redo the 2-minute extension flow." Documented in <code>.env.example</code>.</td></tr>
 </table>
 
+<h2>Second pivot (same day, post-rettiwt push)</h2>
+<p>User pushed back on rettiwt-api: &ldquo;this one looks sus.&rdquo; Threat-model objection is correct — putting live X auth cookies in a Vercel env var means anyone with access to the project's env (you, an exfiltrated build log, a Vercel team-member compromise) gets full account takeover of your real X account. Reverted same-day.</p>
+<h3>D-027 — final source ladder</h3>
+<p>Removed <code>rettiwt-api</code> dependency (<code>pnpm remove</code>), stripped <code>fetchRettiwtDays</code> from <code>twitter.ts</code>, swapped <code>X_RETTIWT_KEY</code> for <code>X_NITTER_HOST</code> as the user-supplied primary source. Final ladder:</p>
+<table>
+  <tr><th>Tier</th><th>Source</th><th>Where the X cookies live</th></tr>
+  <tr><td>1</td><td>Self-hosted Nitter at <code>X_NITTER_HOST</code></td><td>User's Fly.io VM, <em>burner</em> X account (<strong>not real</strong>)</td></tr>
+  <tr><td>2</td><td>syndication.twitter.com (stale curated, kept as soft fallback)</td><td>n/a</td></tr>
+  <tr><td>3</td><td>Public Nitter RSS pool (residential-IP-only)</td><td>n/a</td></tr>
+  <tr><td>4</td><td>throw → zero-fill snapshot</td><td>n/a</td></tr>
+</table>
+<p>Wrote <code>docs/SELF_HOST_NITTER.md</code> as the 1h Fly.io deployment walkthrough. Key threat-model improvements over rettiwt-api: (a) cookies live on a VM the user controls, not in Vercel's env, (b) cookies are from a burner X account with no real-life ties, (c) revocation = log the burner out, no Vercel involvement.</p>
+<h3>T-020 / T-021 / T-022</h3>
+<table>
+  <tr><th>ID</th><th>Tradeoff</th></tr>
+  <tr><td class="id">T-020</td><td>Burner X account must NOT have 2FA (Nitter's session importer can't handle 2FA flows). Acceptable because the burner has nothing of value; documented this caveat in the deploy guide.</td></tr>
+  <tr><td class="id">T-021</td><td>Self-hosted Nitter is ~1h of one-time setup work for the user. Significantly more than "paste a key into Vercel." Justified by the elimination of real-account-takeover risk and zero ongoing $ cost.</td></tr>
+  <tr><td class="id">T-022</td><td>Cold-start latency on Fly's free tier when the Nitter machine is auto-stopped: 1–3s on the first request after idle. Acceptable because our snapshot path is hit hourly (revalidate=3600), so most user page loads hit the warm cache; only the cron-style revalidation pays the cold start, and it's still well under our 8s fetch timeout.</td></tr>
+</table>
+
 <h2>Open questions / followups</h2>
 <table>
   <tr><th>ID</th><th>Item</th></tr>
-  <tr><td class="id">L-015</td><td>Original fallback ladder (rettiwt-api / Bluesky / self-hosted Nitter) <em>partially executed</em> same-day: rettiwt-api landed as primary in D-024. If rettiwt also fails (Twitter breaks the endpoint, X_RETTIWT_KEY revoked, etc.), next stops are: Bluesky <code>app.bsky.feed.getAuthorFeed</code> (if user crossposts) then self-hosted Nitter on Fly.io.</td></tr>
+  <tr><td class="id">L-015</td><td>Final state of the source-ladder explorations: rettiwt-api was tried (D-024) and reverted (D-027). Self-hosted Nitter on Fly.io is now the recommended primary. If THAT eventually breaks, next stops in priority order: paid scraping API (twitterapi.io @ ~$5/mo, GetXAPI @ ~$2/mo), Bluesky <code>app.bsky.feed.getAuthorFeed</code> (only if user crossposts there), then accept the dashboard's Twitter panel as a permanent best-effort surface.</td></tr>
+  <tr><td class="id">L-019</td><td>The threat-model regression in D-024 (rettiwt-api with real-account creds in Vercel env) should have been flagged BEFORE shipping. Standing rule for future: when proposing a credentials-in-env solution, the first question to surface to the user is &ldquo;these are live session cookies for a real account, here's what an attacker gets if they leak” — not the technical merits. Apply this lens to ANY future env-stored secret with implicit identity power.</td></tr>
   <tr><td class="id">L-018</td><td>The 2026-05 scout (<code>scout-twitter-syndication.md</code>) flagged syndication as cookie-gated; we initially disproved it (D-018) when the endpoint returned 200 unauthenticated, but the deeper failure mode (stale curated set, not live timeline) was missed by both the scout and the initial implementation — because the scout's primary question was "can we fetch unauth?" not "is the data fresh?". Lesson: include freshness probes in any future scout against anti-bot-defended endpoints.</td></tr>
   <tr><td class="id">L-016</td><td>The scout doc (<code>scout-twitter-syndication.md</code>) claimed syndication was &ldquo;cookie-gated / dead.&rdquo; That was wrong as of 2026-05-29. Either it was wrong when written, or Twitter relaxed the endpoint. Either way, the scout-then-verify pattern caught it. Worth noting that purely-LLM scouts of fast-moving anti-bot surfaces should always be re-probed with a real curl before being treated as authoritative.</td></tr>
   <tr><td class="id">L-017</td><td>The heatmap is currently week-major (vertical column of 52 weeks × 7 days, ~130px wide). With the page now <code>max-w-6xl</code>, there's room to make it day-major (GitHub-style: 52 columns × 7 rows). Not done in this pass; user only asked for stats horizontalization. Stays a candidate for a follow-up &ldquo;use the new horizontal real estate&rdquo; pass.</td></tr>

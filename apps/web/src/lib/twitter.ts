@@ -3,33 +3,28 @@ import * as https from "node:https";
 import { dateKey, fillMissingDays, type Day } from "./streak";
 
 /**
- * Twitter source ladder — rettiwt-api PRIMARY, syndication + Nitter fallbacks.
+ * Twitter source ladder — self-hosted Nitter PRIMARY, syndication fallback.
  *
- * D-024 (2026-05-29, late): the syndication.twitter.com source landed in
- * D-018 "worked" but returned a curated/embed-widget timeline that lags
- * the real feed by weeks-to-months. Cross-checked on @paulg / @sama /
- * @dhh: their syndication "newest" tweets were 6–7 months stale even
- * though they post daily. Endpoint behavior, not our bug — the endpoint
- * exists to power embed widgets, not to serve a live chronological feed.
+ * D-027 (2026-05-29, evening): rolled back the rettiwt-api primary from
+ * D-024. Putting a live X account's auth cookies into a Vercel env var
+ * is a brittle threat model (env-var dumps, build-log leaks, Vercel team
+ * member access all become real-account-takeover surfaces). The cleaner
+ * answer is to host our own Nitter instance with a *burner* X account's
+ * cookies — same mechanism, but the credential lives on a server we own
+ * and represents a throwaway account, not our real one.
  *
- * Replacement primary: `rettiwt-api` v7 with a user-supplied API_KEY
- * (base64'd auth cookies, obtained via the X Auth Helper browser
- * extension and stored in the `X_RETTIWT_KEY` env var). It calls X's
- * real internal `/UserTweets` GraphQL endpoint, returning the actual
- * chronological timeline. Guest-mode was confirmed dead 2026-05-29 —
- * returns "Not authorized" for `tweet.search` and a DataValidationError
- * for `user.timeline` without an apiKey.
- *
- * Fallback ladder if rettiwt fails (or X_RETTIWT_KEY isn't set):
- *   2. syndication.twitter.com (stale-but-something — better than zero)
- *   3. Nitter RSS pool (rarely works from Vercel, but works in dev)
+ * Ladder:
+ *   1. X_NITTER_HOST   — user's self-hosted instance (set in env, no slash)
+ *   2. Public Nitter pool (nitter.net etc) — works on residential IPs,
+ *      usually blocked from datacenter IPs
+ *   3. syndication.twitter.com — stale curated widget feed (6–7mo lag),
+ *      kept as a "better than zero" last resort for forks who haven't
+ *      set up self-hosting yet. Verified 2026-05-29 against @paulg /
+ *      @sama / @dhh — their newest entries from this endpoint were all
+ *      6–7 months stale even though they tweet daily.
  *   4. throw TwitterFeedOfflineError → snapshot.ts substitutes zero-fill
  *
- * Why keep syndication despite the staleness: when rettiwt is unset
- * (e.g., fresh fork, no API_KEY) the dashboard still shows *something*
- * meaningful instead of an empty heatmap. The choice is between "a few
- * popular tweets from months ago" and "all zeros" — popular-tweets-only
- * is honestly more useful than nothing.
+ * See docs/SELF_HOST_NITTER.md for the Fly.io deployment walkthrough.
  */
 
 // Nitter host order — fallback only. From Vercel egress these are
@@ -91,36 +86,26 @@ export async function fetchTwitterDays(opts: FetchTwitterOpts): Promise<Day[]> {
 
   const attempts: Array<{ host: string; reason: string }> = [];
 
-  // ---- 1. rettiwt-api (primary, chronological, needs X_RETTIWT_KEY) ----
-  const rettiwtKey = process.env.X_RETTIWT_KEY;
-  if (rettiwtKey) {
-    try {
-      const r = await fetchRettiwtDays(
-        rettiwtKey,
-        login,
-        tz,
-        from,
-        to
-      );
+  // ---- 1. self-hosted Nitter (X_NITTER_HOST, see docs/SELF_HOST_NITTER.md) -
+  const selfHostRaw = process.env.X_NITTER_HOST?.trim();
+  if (selfHostRaw) {
+    // Accept "my-nitter.fly.dev" or "https://my-nitter.fly.dev" — strip
+    // protocol + trailing slash + any path, leave bare host:port.
+    const selfHost = selfHostRaw
+      .replace(/^https?:\/\//, "")
+      .replace(/\/.*$/, "");
+    const parsed = await tryNitterHost(selfHost, login, tz, from, to);
+    if (parsed.kind === "ok") {
       console.log(
-        `[twitter] using rettiwt-api for login=${login} ` +
-          `(parsed=${r.parsedItems}, in_window=${r.inWindowItems}, pages=${r.pages})`
+        `[twitter] using self-hosted Nitter host=${selfHost} for login=${login} ` +
+          `(items=${parsed.value.parsedItems}, in_window=${parsed.value.inWindowItems})`
       );
-      return r.days;
-    } catch (err) {
-      attempts.push({
-        host: "rettiwt-api",
-        reason: err instanceof Error ? err.message : String(err),
-      });
+      return parsed.value.days;
     }
-  } else {
-    attempts.push({
-      host: "rettiwt-api",
-      reason: "X_RETTIWT_KEY env var not set (see README, falling through)",
-    });
+    attempts.push({ host: selfHost, reason: parsed.reason });
   }
 
-  // ---- 2. syndication.twitter.com (stale but unauth fallback) ----
+  // ---- 2. syndication.twitter.com (stale fallback for forks w/o self-host) -
   try {
     const synParsed = await fetchSyndicationProfile(
       login,
@@ -148,47 +133,60 @@ export async function fetchTwitterDays(opts: FetchTwitterOpts): Promise<Day[]> {
     });
   }
 
-  // ---- 2. Nitter RSS hosts (fallback pool) ----
+  // ---- 3. public Nitter RSS pool (residential-IP-only fallback) ----
   for (const host of HOSTS) {
-    const url = `https://${host}/${encodeURIComponent(login)}/rss`;
-    try {
-      const body = await fetchHostRss(url, opts.revalidate ?? 3600);
-      if (!body) {
-        attempts.push({ host, reason: "empty body" });
-        continue;
-      }
-      // Sanity: any plausible RSS or Atom feed contains "<item" or "<entry".
-      if (!/<item[\s>]/.test(body) && !/<entry[\s>]/.test(body)) {
-        attempts.push({ host, reason: "no <item> in response" });
-        continue;
-      }
-      const parsed = parseRssToDays(body, tz, from, to);
-      // Stub/whitelist-sentinel guard: a host like xcancel.com may return
-      // a valid-looking RSS containing a single item dated 1971-01-01.
-      // If literally none of the parsed items fall inside our display
-      // window, the host is useless to us — fall through.
-      if (parsed.inWindowItems === 0) {
-        attempts.push({
-          host,
-          reason: `0 items in window (parsed=${parsed.parsedItems}); likely stub/whitelist sentinel`,
-        });
-        continue;
-      }
+    const parsed = await tryNitterHost(host, login, tz, from, to);
+    if (parsed.kind === "ok") {
       console.log(
-        `[twitter] using host=${host} for login=${login} ` +
-          `(parsed=${parsed.parsedItems}, in_window=${parsed.inWindowItems})`
+        `[twitter] using public host=${host} for login=${login} ` +
+          `(parsed=${parsed.value.parsedItems}, in_window=${parsed.value.inWindowItems})`
       );
-      return parsed.days;
-    } catch (err) {
-      attempts.push({
-        host,
-        reason: err instanceof Error ? err.message : String(err),
-      });
-      continue;
+      return parsed.value.days;
     }
+    attempts.push({ host, reason: parsed.reason });
   }
 
   throw new TwitterFeedOfflineError(attempts);
+}
+
+/**
+ * Try one Nitter host (self-hosted or public). Returns an OK with parsed
+ * data on success, or an Err with a human-readable reason on any failure.
+ * Reasons fall into three buckets:
+ *   1. Transport (HTTP 4xx/5xx, timeout, DNS) — `fetchHostRss` throws.
+ *   2. Layout (Cloudflare challenge / RSS allowlist stub) — body fails the
+ *      `<item>`/`<entry>` marker regex.
+ *   3. Window-empty (e.g. xcancel's 1971-01-01 stub item) — every parsed
+ *      timestamp falls outside [from, to].
+ * Bucket (3) is the subtle one: the host responded with plausible RSS
+ * but the data is structurally useless, so we treat it as a host failure.
+ */
+async function tryNitterHost(
+  host: string,
+  login: string,
+  tz: string,
+  from: string,
+  to: string
+): Promise<{ kind: "ok"; value: ParsedRss } | { kind: "err"; reason: string }> {
+  const url = `https://${host}/${encodeURIComponent(login)}/rss`;
+  let body: string | null;
+  try {
+    body = await fetchHostRss(url, 3600);
+  } catch (err) {
+    return { kind: "err", reason: err instanceof Error ? err.message : String(err) };
+  }
+  if (!body) return { kind: "err", reason: "empty body" };
+  if (!/<item[\s>]/.test(body) && !/<entry[\s>]/.test(body)) {
+    return { kind: "err", reason: "no <item> in response" };
+  }
+  const parsed = parseRssToDays(body, tz, from, to);
+  if (parsed.inWindowItems === 0) {
+    return {
+      kind: "err",
+      reason: `0 items in window (parsed=${parsed.parsedItems}); likely stub/whitelist sentinel`,
+    };
+  }
+  return { kind: "ok", value: parsed };
 }
 
 async function fetchHostRss(url: string, revalidate: number): Promise<string | null> {
@@ -411,92 +409,3 @@ function parseRssToDays(body: string, tz: string, from: string, to: string): Par
   };
 }
 
-// ---------------------------------------------------------------------------
-// rettiwt-api (chronological, authenticated)
-// ---------------------------------------------------------------------------
-
-type RettiwtParsed = ParsedRss & { pages: number };
-
-/**
- * Pull a user's chronological timeline via the rettiwt-api package,
- * which under the hood calls X's internal `/UserTweets` GraphQL
- * endpoint with the auth cookies encoded in `apiKey`.
- *
- * We paginate up to `MAX_PAGES` (or until we exceed the `from` window),
- * whichever comes first. That bounds worst-case latency and X API cost
- * for heavy tweeters while still covering the ~365-day heatmap window
- * for normal tweet cadence.
- */
-async function fetchRettiwtDays(
-  apiKey: string,
-  login: string,
-  tz: string,
-  from: string,
-  to: string
-): Promise<RettiwtParsed> {
-  // Dynamic import keeps rettiwt-api off the cold-start path when
-  // X_RETTIWT_KEY is unset (the surrounding code never calls in here).
-  const { Rettiwt } = await import("rettiwt-api");
-  const r = new Rettiwt({ apiKey });
-
-  // Step 1: resolve handle → numeric user id.
-  const userDetails = await r.user.details(login);
-  const userId = userDetails?.id;
-  if (!userId) {
-    throw new Error(`user.details returned no id for handle=${login}`);
-  }
-
-  // Step 2: paginate the timeline. Stop early once the oldest item in a
-  // page is already older than our `from` cutoff.
-  const MAX_PAGES = 5;
-  const fromBoundary = new Date(`${from}T00:00:00Z`).getTime();
-
-  const counts = new Map<string, number>();
-  let parsedItems = 0;
-  let inWindowItems = 0;
-  let cursor: string | undefined;
-  let pages = 0;
-
-  while (pages < MAX_PAGES) {
-    const tl = (await r.user.timeline(userId, undefined, cursor)) as {
-      list?: Array<{ createdAt?: string }>;
-      next?: { value?: string } | undefined;
-    };
-    const list = tl?.list ?? [];
-    if (list.length === 0) break;
-
-    let oldestInPageMs = Number.POSITIVE_INFINITY;
-    for (const t of list) {
-      const raw = t?.createdAt;
-      if (!raw) continue;
-      const d = new Date(raw);
-      const ms = d.getTime();
-      if (Number.isNaN(ms)) continue;
-      parsedItems++;
-      if (ms < oldestInPageMs) oldestInPageMs = ms;
-      const key = dateKey(d, tz);
-      if (key >= from && key <= to) inWindowItems++;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    pages++;
-
-    if (oldestInPageMs <= fromBoundary) break;
-    cursor = tl?.next?.value;
-    if (!cursor) break;
-  }
-
-  if (parsedItems === 0) {
-    throw new Error(
-      `rettiwt-api returned 0 parseable tweets (pages=${pages}); ` +
-        `likely expired X_RETTIWT_KEY or bad handle`
-    );
-  }
-
-  const rows = Array.from(counts, ([date, count]) => ({ date, count }));
-  return {
-    days: fillMissingDays(rows, from, to),
-    parsedItems,
-    inWindowItems,
-    pages,
-  };
-}

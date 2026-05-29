@@ -12,8 +12,7 @@
   "dependencies": {
     "next": "^14.2.5",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "rettiwt-api": "^7.0.3"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
