@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>2026-05-29 — twitter syndication source + UI polish</title>
+<style>
+  body { font: 13px/1.45 ui-monospace, monospace; max-width: 980px; margin: 2rem auto; padding: 0 1rem; }
+  h1, h2 { font-family: ui-sans-serif, system-ui; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; }
+  th, td { border: 1px solid #ccc; padding: 4px 8px; vertical-align: top; }
+  th { background: #f4f4f4; text-align: left; }
+  code { background: #f4f4f4; padding: 1px 4px; }
+  .id { white-space: nowrap; font-weight: bold; }
+</style></head>
+<body>
+<h1>2026-05-29 — Twitter syndication source + dashboard UI polish</h1>
+
+<p><strong>Scope.</strong> User reported four things at once:
+(1) tab title was the Evangelion in-joke (<code>NERV // Central Dogma</code>) and should be replaced;
+(2) day-streak number was zero-padded to 3 digits (<code>004</code>) — drop the pad;
+(3) on desktop the panel content was cramped against a narrow container with the streak/today/longest stats stacked in a tall column, even though there was 800+px of unused horizontal space on each side;
+(4) Twitter feed was returning offline on prod with all 4 Nitter hosts failing.</p>
+
+<h2>Decisions</h2>
+<table>
+  <tr><th>ID</th><th>What</th><th>Why</th></tr>
+  <tr><td class="id">D-018</td><td>Switch Twitter primary source from Nitter pool to <code>syndication.twitter.com/srv/timeline-profile/screen-name/&lt;handle&gt;</code>; keep Nitter as fallback.</td><td>Live probe showed all 4 Nitter hosts failing from Vercel egress IPs (DNS fail on nitter.net, Cloudflare challenge on poast/privacyredirect, RSS allowlist on xcancel). Same probe found syndication endpoint returning 200 + 427 KB HTML with <code>__NEXT_DATA__</code> embedding 101 recent tweets, no cookies. Contradicts the 2026-05 scout doc which claimed it was cookie-gated — endpoint behavior has evidently shifted.</td></tr>
+  <tr><td class="id">D-019</td><td>Use <code>node:https</code> (not <code>fetch</code>) for the syndication call.</td><td>Direct A/B from same IP, same second: <code>curl</code> = 200, <code>node:https.get</code> = 200, but Node's built-in <code>fetch</code> (undici) = 429 (&ldquo;Rate limit exceeded&rdquo;, body length 20) on the very first request. Twitter is fingerprinting undici's TLS handshake. Node core OpenSSL bindings present a different JA3/JA4 that gets through. Vercel runs the same Node binary, so the bypass carries over.</td></tr>
+  <tr><td class="id">D-020</td><td>Bypass Next.js fetch-level cache for the syndication call. Rely on page/route-level <code>revalidate = 3600</code> instead.</td><td><code>node:https</code> isn't wrapped by Next's caching layer (that's <code>fetch</code>-only). Acceptable because the rendered snapshot is itself cached for 1h, so we still only hit the endpoint once per region per hour — well under any plausible quota.</td></tr>
+  <tr><td class="id">D-021</td><td>Widen page container <code>max-w-3xl</code> (768px) → <code>max-w-6xl</code> (1152px); within each MagiPanel, lay out the three stats horizontally (<code>flex sm:flex-row</code>) on desktop with the heatmap below.</td><td>User explicitly: &ldquo;we have a lot more space on left and right we can use.&rdquo; Stacking stats vertically was a holdover from mobile-first; on desktop with the wider container there's plenty of room for a row layout. Heatmap stays narrow + tall (week-major) — that's a separate redesign if we want it horizontal.</td></tr>
+  <tr><td class="id">D-022</td><td>Drop <code>padStart(3, "0")</code> on streak; render the raw integer.</td><td>User feedback: &ldquo;004&rdquo; reads as a serial number, not a streak count. Removed pad makes the number self-evident; tabular-nums keeps alignment between panels regardless of digit count.</td></tr>
+  <tr><td class="id">D-023</td><td>Tab title: <code>NERV // Central Dogma</code> → <code>did we ship today?</code></td><td>Matches the H1 on the page; what users actually read in browser tabs is the title, and the H1's question framing is the point of the whole app.</td></tr>
+</table>
+
+<h2>Tradeoffs</h2>
+<table>
+  <tr><th>ID</th><th>Tradeoff</th></tr>
+  <tr><td class="id">T-014</td><td>Syndication endpoint returns ~101 tweets max (vs Nitter's 20). Strict upgrade for count fidelity, but still undercounts heavy posters for the 365-day heatmap. No paginated unauth variant exists. Mitigated by: most relevant signal is recent days + today, both well within 101 entries even for 5+ tweets/day cadence.</td></tr>
+  <tr><td class="id">T-015</td><td>TLS-fingerprint workaround (<code>node:https</code> instead of <code>fetch</code>) is durable for now but fragile in principle — if Twitter starts fingerprinting at a deeper layer (e.g., browser-specific JA3 only), this collapses. Followup L-015 tracks the fallback ladder.</td></tr>
+  <tr><td class="id">T-016</td><td>Wider container breaks the &ldquo;mobile-first compact card&rdquo; aesthetic on tablet sizes (640–1024px) — stats jump from column to row at the <code>sm:</code> breakpoint (640px) while the heatmap stays the same width below. Acceptable: panels still read top-to-bottom as a coherent unit, just sparser.</td></tr>
+</table>
+
+<h2>Open questions / followups</h2>
+<table>
+  <tr><th>ID</th><th>Item</th></tr>
+  <tr><td class="id">L-015</td><td>If syndication endpoint ever fingerprints <code>node:https</code> too, fallback ladder is: rettiwt-api (guest token), then Bluesky (if user crossposts), then self-hosted Nitter. Pre-decided ranking so future-me doesn't relitigate.</td></tr>
+  <tr><td class="id">L-016</td><td>The scout doc (<code>scout-twitter-syndication.md</code>) claimed syndication was &ldquo;cookie-gated / dead.&rdquo; That was wrong as of 2026-05-29. Either it was wrong when written, or Twitter relaxed the endpoint. Either way, the scout-then-verify pattern caught it. Worth noting that purely-LLM scouts of fast-moving anti-bot surfaces should always be re-probed with a real curl before being treated as authoritative.</td></tr>
+  <tr><td class="id">L-017</td><td>The heatmap is currently week-major (vertical column of 52 weeks × 7 days, ~130px wide). With the page now <code>max-w-6xl</code>, there's room to make it day-major (GitHub-style: 52 columns × 7 rows). Not done in this pass; user only asked for stats horizontalization. Stays a candidate for a follow-up &ldquo;use the new horizontal real estate&rdquo; pass.</td></tr>
+</table>
+
+<h2>Verification</h2>
+<ul>
+  <li><code>pnpm typecheck</code> — clean.</li>
+  <li><code>pnpm build</code> — clean. Build log shows <code>[twitter] using host=syndication.twitter.com for login=anishthite (parsed=101, in_window=5)</code> during static generation — new path fires for real, not just in unit harness.</li>
+  <li>End-to-end node sim of fetcher: parsed 101 entries, 5 within last-365-day window, bucketed by PT correctly.</li>
+  <li>UI changes verified by inspection of <code>page.tsx</code> + <code>MagiPanel.tsx</code> diff; no logic touched, only Tailwind classes + one string literal removal (<code>padStart</code>).</li>
+</ul>
+
+</body>
+</html>

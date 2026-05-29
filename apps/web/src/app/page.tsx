@@ -25,7 +25,7 @@ export default async function Page() {
   const shippedBoth = ghToday > 0 && xToday > 0;
 
   return (
-    <main className="min-h-screen px-4 py-8 sm:px-6 sm:py-12 max-w-3xl mx-auto">
+    <main className="min-h-screen px-4 py-8 sm:px-6 sm:py-12 max-w-6xl mx-auto">
       {error ? (
         <div className="border border-nerv-warn text-nerv-warn p-4 mb-6 text-sm">
           <div className="uppercase tracking-widest mb-2">SYS:FAULT</div>

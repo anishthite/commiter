@@ -1,37 +1,43 @@
 import "server-only";
+import * as https from "node:https";
 import { dateKey, fillMissingDays, type Day } from "./streak";
 
 /**
- * Twitter source = Nitter RSS (D-002b).
+ * Twitter source — syndication.twitter.com PRIMARY, Nitter RSS fallback.
  *
- * The official X read API is paywalled and the syndication profile endpoint
- * is cookie-gated / non-chronological in 2026. Nitter RSS remains the only
- * working unauth path that gives us recent tweet timestamps for a handle.
+ * D-018 (2026-05-29): live probe showed the prod failure mode was all 4
+ * Nitter hosts blocked from Vercel egress IPs (DNS fail / Cloudflare
+ * challenges / RSS allowlists). Meanwhile
+ * `https://syndication.twitter.com/srv/timeline-profile/screen-name/<handle>`
+ * returns a 427KB HTML page with `__NEXT_DATA__` embedding ~101 recent
+ * tweets per handle, *with no cookies required*. That contradicts the
+ * 2026-05 scout (which said the endpoint was cookie-gated) but matches
+ * direct curl observation against handle=anishthite. We now treat it as
+ * the primary source, falling through to the Nitter pool only if it
+ * fails — same `TwitterFeedOfflineError` shape, attempts list now
+ * includes the syndication attempt.
  *
- * We only need timestamps (heatmap counts per day); RSS gives us
- * `<pubDate>` per `<item>` directly. No JSON hydration, no token math, no
- * deps (D-010).
- *
- * Hosts are tried sequentially (Q-004); the first to respond with valid
- * XML wins. If all fail we throw `TwitterFeedOfflineError`, which the
- * caller catches and substitutes with a zero-filled day window.
+ * We only need timestamps (heatmap counts per day); the syndication HTML
+ * gives us `entries[].content.tweet.created_at` (legacy v1.1 format,
+ * `new Date()`-parseable). Nitter's RSS `<pubDate>` is the fallback.
  */
 
-// Host order matters — verified by live probe 2026-05-29.
-//   nitter.net      → reliably 200 + 20-item RSS unauth (primary).
-//   nitter.poast.org→ sometimes 200, sometimes Cloudflare "Verifying your
-//                    browser" challenge HTML (403). Useful when up.
-//   xcancel.com     → RSS reader allowlist required; returns a 1971 STUB
-//                    feed otherwise. Caught by in-window guard below.
+// Nitter host order — fallback only. From Vercel egress these are
+// usually all blocked (see TwitterFeedOfflineError attempts in prod
+// logs 2026-05-29), but they sometimes work from local dev and we keep
+// them as defense in depth.
+//   nitter.net      → 200 + 20-item RSS unauth from residential IPs.
+//   nitter.poast.org→ sometimes 200, sometimes Cloudflare challenge.
+//   xcancel.com     → RSS reader allowlist; otherwise 1971 stub.
 //   nitter.privacyredirect.com → Cloudflare anti-bot HTML.
-// If all 4 fail, snapshot.ts substitutes a zero-filled window and logs a
-// warning; UI shows TWITTER STREAK=0 today=0 (honest).
 const HOSTS = [
   "nitter.net",
   "nitter.poast.org",
   "xcancel.com",
   "nitter.privacyredirect.com",
 ] as const;
+
+const SYNDICATION_HOST = "syndication.twitter.com";
 
 // A normal-looking browser UA. Some Nitter operators 403 obvious bot UAs.
 const USER_AGENT =
@@ -75,6 +81,35 @@ export async function fetchTwitterDays(opts: FetchTwitterOpts): Promise<Day[]> {
 
   const attempts: Array<{ host: string; reason: string }> = [];
 
+  // ---- 1. syndication.twitter.com (primary, ~101 tweets, no cookies) ----
+  try {
+    const synParsed = await fetchSyndicationProfile(
+      login,
+      tz,
+      from,
+      to,
+      opts.revalidate ?? 3600
+    );
+    if (synParsed.inWindowItems === 0 && synParsed.parsedItems === 0) {
+      attempts.push({
+        host: SYNDICATION_HOST,
+        reason: "0 tweets parsed (empty timeline or auth-gated)",
+      });
+    } else {
+      console.log(
+        `[twitter] using host=${SYNDICATION_HOST} for login=${login} ` +
+          `(parsed=${synParsed.parsedItems}, in_window=${synParsed.inWindowItems})`
+      );
+      return synParsed.days;
+    }
+  } catch (err) {
+    attempts.push({
+      host: SYNDICATION_HOST,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // ---- 2. Nitter RSS hosts (fallback pool) ----
   for (const host of HOSTS) {
     const url = `https://${host}/${encodeURIComponent(login)}/rss`;
     try {
@@ -161,6 +196,138 @@ type ParsedRss = {
   /** Subset of parsedItems whose bucket day falls inside [from, to]. */
   inWindowItems: number;
 };
+
+/**
+ * Fetch the X profile timeline via `syndication.twitter.com`. This is the
+ * post-2024 syndication endpoint that ships timeline JSON inside a
+ * `__NEXT_DATA__` script tag. As of 2026-05-29 it returns ~101 entries
+ * for a public handle with no cookies required (live curl verified).
+ *
+ * IMPORTANT: we use `node:https` here, NOT `fetch`. Node's built-in
+ * `fetch` (undici) presents a TLS fingerprint that syndication.twitter.com
+ * rejects with HTTP 429 ("Rate limit exceeded" body, length 20) on the
+ * FIRST request from any IP — it's a TLS-fingerprint block, not a true
+ * rate limit. Verified 2026-05-29: same machine, same IP, same second:
+ * curl=200, `node -e "https.get(...)"` = 200, but `node -e "fetch(...)"` =
+ * 429 every time. `node:https` uses Node core OpenSSL bindings which
+ * present a different (more permissive) JA3 to Twitter.
+ *
+ * Side effect: we bypass Next.js' fetch-level cache for this call. The
+ * page-level `revalidate = 3600` (in /api/snapshot and /page.tsx) still
+ * caches the rendered output, so we only actually hit the endpoint once
+ * per region per hour, well under any plausible quota.
+ *
+ * Throws on transport / parse failure so the outer loop can fall through
+ * to Nitter.
+ */
+async function fetchSyndicationProfile(
+  login: string,
+  tz: string,
+  from: string,
+  to: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _revalidate: number
+): Promise<ParsedRss> {
+  const path = `/srv/timeline-profile/screen-name/${encodeURIComponent(login)}`;
+  const body = await httpsGetText(SYNDICATION_HOST, path);
+
+  // The Next.js page embeds initial props in this exact script tag.
+  const m = body.match(
+    /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/
+  );
+  if (!m) {
+    throw new Error("no __NEXT_DATA__ script tag (auth wall or layout change)");
+  }
+  let data: unknown;
+  try {
+    data = JSON.parse(m[1]!);
+  } catch (err) {
+    throw new Error(
+      `__NEXT_DATA__ JSON parse failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  // Walk: data.props.pageProps.timeline.entries[].content.tweet.created_at
+  const entries = (
+    data as {
+      props?: {
+        pageProps?: {
+          timeline?: {
+            entries?: Array<{
+              type?: string;
+              content?: { tweet?: { created_at?: string } };
+            }>;
+          };
+        };
+      };
+    }
+  )?.props?.pageProps?.timeline?.entries;
+
+  if (!Array.isArray(entries)) {
+    throw new Error("timeline.entries missing in __NEXT_DATA__ payload");
+  }
+
+  const counts = new Map<string, number>();
+  let parsedItems = 0;
+  let inWindowItems = 0;
+
+  for (const e of entries) {
+    if (e?.type !== "tweet") continue;
+    const raw = e.content?.tweet?.created_at;
+    if (!raw) continue;
+    const t = new Date(raw);
+    if (Number.isNaN(t.getTime())) continue;
+    parsedItems++;
+    const key = dateKey(t, tz);
+    if (key >= from && key <= to) inWindowItems++;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+
+  const rows = Array.from(counts, ([date, count]) => ({ date, count }));
+  return {
+    days: fillMissingDays(rows, from, to),
+    parsedItems,
+    inWindowItems,
+  };
+}
+
+/**
+ * Promise wrapper around `https.get` so we can use a TLS fingerprint that
+ * isn't undici's. Throws on non-2xx, timeouts, or socket errors. Body is
+ * always returned as a UTF-8 string — the response is small enough
+ * (~430KB) to materialize fully.
+ */
+function httpsGetText(host: string, path: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(
+      {
+        hostname: host,
+        path,
+        headers: {
+          "User-Agent": USER_AGENT,
+          Accept: "text/html,application/xhtml+xml,*/*",
+        },
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        if (status < 200 || status >= 300) {
+          // Drain the body to free the socket, then reject.
+          res.resume();
+          reject(new Error(`HTTP ${status}`));
+          return;
+        }
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        res.on("error", reject);
+      }
+    );
+    req.setTimeout(FETCH_TIMEOUT_MS, () => {
+      req.destroy(new Error(`timeout after ${FETCH_TIMEOUT_MS}ms`));
+    });
+    req.on("error", reject);
+  });
+}
 
 /**
  * Extract `<pubDate>` (RSS) or `<published>` (Atom) per item, bucket each
