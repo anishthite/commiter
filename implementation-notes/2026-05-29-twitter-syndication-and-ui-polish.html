@@ -83,6 +83,24 @@
   <tr><td class="id">T-022</td><td>Cold-start latency on Fly's free tier when the Nitter machine is auto-stopped: 1–3s on the first request after idle. Acceptable because our snapshot path is hit hourly (revalidate=3600), so most user page loads hit the warm cache; only the cron-style revalidation pays the cold start, and it's still well under our 8s fetch timeout.</td></tr>
 </table>
 
+<h2>Third pivot — ship by getting out of the scraping business entirely</h2>
+<p>After the rettiwt rollback, user surfaced the bigger picture: they want to do other projects (in-Chrome LLM-driven Twitter automation, style-mimicry tweet model, follower analysis, etc.) and correctly identified that <em>any</em> server-side scraping path is doomed because anti-bot in 2026 has won. The right move isn't to make commiter smarter at scraping — it's to make it dumber. Decouple the scraping concern from the rendering concern permanently.</p>
+<h3>D-028 — final architecture</h3>
+<table>
+  <tr><th>Tier</th><th>Source</th><th>Producer</th></tr>
+  <tr><td>1</td><td><code>X_DATA_URL</code> — JSON file at a URL, shape <code>[{date,count}]</code> or <code>{days:[…]}</code></td><td>Whatever scraper the user eventually builds (userscript, hosted browser, Mac mini at home, paid API, anything that can emit JSON)</td></tr>
+  <tr><td>2</td><td><code>X_NITTER_HOST</code> — self-hosted Nitter, see docs/SELF_HOST_NITTER.md</td><td>User's Fly.io VM</td></tr>
+  <tr><td>3</td><td>Public Nitter RSS pool</td><td>nitter.net etc — dev-only</td></tr>
+  <tr><td>4</td><td>throw → <code>twitter.offline = true</code> → page hides the panel</td><td>graceful degradation</td></tr>
+</table>
+<p>Removed syndication.twitter.com entirely (D-028) — silently-wrong stale data is worse than honestly-empty. With nothing wired up, the dashboard now renders a clean GitHub-only view with a wide GitHub MagiPanel and a one-line subscript explaining how to enable Twitter. The <code>combined</code> streak switches from AND to OR-by-degeneration when Twitter is offline (“did we ship today?” answers from GitHub alone, doesn't punish the user for not configuring a Twitter source).</p>
+<h3>T-023 / T-024</h3>
+<table>
+  <tr><th>ID</th><th>Tradeoff</th></tr>
+  <tr><td class="id">T-023</td><td>Wire format is the integration surface and we own zero of the producers. Chose a forgiving shape (accept bare array OR <code>{days: array}</code>, ignore unknown fields, drop out-of-window dates silently) so producers can ship richer payloads (timestamps, engagement counts, hashtags) without breaking commiter. The cost: looser validation means a malformed producer could silently produce zero-fills. Acceptable because the producer is the user's own code.</td></tr>
+  <tr><td class="id">T-024</td><td>Hiding the Twitter panel when offline is a UX improvement (no fake-zero heatmap) but loses the affordance that tells a fresh-fork user that Twitter is a thing this dashboard CAN do. Mitigated with a single-line subscript pointing at <code>X_DATA_URL</code> / <code>X_NITTER_HOST</code> when the panel is hidden. Honest without being noisy.</td></tr>
+</table>
+
 <h2>Open questions / followups</h2>
 <table>
   <tr><th>ID</th><th>Item</th></tr>

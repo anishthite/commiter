@@ -1,48 +1,44 @@
 import "server-only";
-import * as https from "node:https";
 import { dateKey, fillMissingDays, type Day } from "./streak";
 
 /**
- * Twitter source ladder — self-hosted Nitter PRIMARY, syndication fallback.
+ * Twitter source ladder — bring-your-own-data (D-028, 2026-05-29 night).
  *
- * D-027 (2026-05-29, evening): rolled back the rettiwt-api primary from
- * D-024. Putting a live X account's auth cookies into a Vercel env var
- * is a brittle threat model (env-var dumps, build-log leaks, Vercel team
- * member access all become real-account-takeover surfaces). The cleaner
- * answer is to host our own Nitter instance with a *burner* X account's
- * cookies — same mechanism, but the credential lives on a server we own
- * and represents a throwaway account, not our real one.
+ * Final architecture after a day of failed scraping experiments:
+ * stop trying to scrape X at render time. The dashboard reads a
+ * pre-built JSON file (whoever produced it: a userscript on your
+ * laptop, a hosted browser cron, a self-hosted Nitter, a paid API —
+ * commiter doesn't care). The scraping concern is decoupled from the
+ * rendering concern, permanently.
  *
  * Ladder:
- *   1. X_NITTER_HOST   — user's self-hosted instance (set in env, no slash)
- *   2. Public Nitter pool (nitter.net etc) — works on residential IPs,
- *      usually blocked from datacenter IPs
- *   3. syndication.twitter.com — stale curated widget feed (6–7mo lag),
- *      kept as a "better than zero" last resort for forks who haven't
- *      set up self-hosting yet. Verified 2026-05-29 against @paulg /
- *      @sama / @dhh — their newest entries from this endpoint were all
- *      6–7 months stale even though they tweet daily.
- *   4. throw TwitterFeedOfflineError → snapshot.ts substitutes zero-fill
+ *   1. X_DATA_URL — GET this URL, expect `[{date:"YYYY-MM-DD", count:N}]`,
+ *      use it verbatim. The Real Answer. Fueled by whatever you build
+ *      (or by nothing, in which case we fall through).
+ *   2. X_NITTER_HOST — user's self-hosted Nitter (see docs/SELF_HOST_NITTER.md).
+ *   3. Public Nitter pool — residential-IP-only; works in dev, mostly
+ *      blocked from Vercel egress.
+ *   4. throw TwitterFeedOfflineError → snapshot.ts substitutes zero-fill,
+ *      and page.tsx hides the Twitter panel entirely so the dashboard
+ *      gracefully degrades to GitHub-only.
  *
- * See docs/SELF_HOST_NITTER.md for the Fly.io deployment walkthrough.
+ * Note: an earlier draft kept syndication.twitter.com as a soft
+ * fallback. Removed in D-028 because it returns 6–7 month stale
+ * curated data that LOOKS fresh — silently wrong is worse than
+ * honestly empty. Verified empirically against @paulg / @sama / @dhh
+ * (their syndication "newest" tweets were all from October 2025 even
+ * though they post daily).
  */
 
 // Nitter host order — fallback only. From Vercel egress these are
-// usually all blocked (see TwitterFeedOfflineError attempts in prod
-// logs 2026-05-29), but they sometimes work from local dev and we keep
-// them as defense in depth.
-//   nitter.net      → 200 + 20-item RSS unauth from residential IPs.
-//   nitter.poast.org→ sometimes 200, sometimes Cloudflare challenge.
-//   xcancel.com     → RSS reader allowlist; otherwise 1971 stub.
-//   nitter.privacyredirect.com → Cloudflare anti-bot HTML.
+// usually all blocked, but they sometimes work from local dev and we
+// keep them as defense in depth.
 const HOSTS = [
   "nitter.net",
   "nitter.poast.org",
   "xcancel.com",
   "nitter.privacyredirect.com",
 ] as const;
-
-const SYNDICATION_HOST = "syndication.twitter.com";
 
 // A normal-looking browser UA. Some Nitter operators 403 obvious bot UAs.
 const USER_AGENT =
@@ -86,7 +82,30 @@ export async function fetchTwitterDays(opts: FetchTwitterOpts): Promise<Day[]> {
 
   const attempts: Array<{ host: string; reason: string }> = [];
 
-  // ---- 1. self-hosted Nitter (X_NITTER_HOST, see docs/SELF_HOST_NITTER.md) -
+  // ---- 1. X_DATA_URL: pre-built JSON from your scraper (the Real Answer) ---
+  const dataUrl = process.env.X_DATA_URL?.trim();
+  if (dataUrl) {
+    try {
+      const days = await fetchTwitterDataUrl(
+        dataUrl,
+        from,
+        to,
+        opts.revalidate ?? 3600
+      );
+      console.log(
+        `[twitter] using X_DATA_URL (${dataUrl}) for login=${login} ` +
+          `(days=${days.length}, today=${days.find((d) => d.date === to)?.count ?? 0})`
+      );
+      return days;
+    } catch (err) {
+      attempts.push({
+        host: "X_DATA_URL",
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // ---- 2. self-hosted Nitter (X_NITTER_HOST, see docs/SELF_HOST_NITTER.md) -
   const selfHostRaw = process.env.X_NITTER_HOST?.trim();
   if (selfHostRaw) {
     // Accept "my-nitter.fly.dev" or "https://my-nitter.fly.dev" — strip
@@ -105,35 +124,7 @@ export async function fetchTwitterDays(opts: FetchTwitterOpts): Promise<Day[]> {
     attempts.push({ host: selfHost, reason: parsed.reason });
   }
 
-  // ---- 2. syndication.twitter.com (stale fallback for forks w/o self-host) -
-  try {
-    const synParsed = await fetchSyndicationProfile(
-      login,
-      tz,
-      from,
-      to,
-      opts.revalidate ?? 3600
-    );
-    if (synParsed.inWindowItems === 0 && synParsed.parsedItems === 0) {
-      attempts.push({
-        host: SYNDICATION_HOST,
-        reason: "0 tweets parsed (empty timeline or auth-gated)",
-      });
-    } else {
-      console.log(
-        `[twitter] using host=${SYNDICATION_HOST} for login=${login} ` +
-          `(parsed=${synParsed.parsedItems}, in_window=${synParsed.inWindowItems})`
-      );
-      return synParsed.days;
-    }
-  } catch (err) {
-    attempts.push({
-      host: SYNDICATION_HOST,
-      reason: err instanceof Error ? err.message : String(err),
-    });
-  }
-
-  // ---- 3. public Nitter RSS pool (residential-IP-only fallback) ----
+  // ---- 3. public Nitter pool (residential-IP-only fallback) --------------
   for (const host of HOSTS) {
     const parsed = await tryNitterHost(host, login, tz, from, to);
     if (parsed.kind === "ok") {
@@ -235,135 +226,64 @@ type ParsedRss = {
 };
 
 /**
- * Fetch the X profile timeline via `syndication.twitter.com`. This is the
- * post-2024 syndication endpoint that ships timeline JSON inside a
- * `__NEXT_DATA__` script tag. As of 2026-05-29 it returns ~101 entries
- * for a public handle with no cookies required (live curl verified).
+ * Fetch a pre-built tweet-counts JSON from X_DATA_URL.
  *
- * IMPORTANT: we use `node:https` here, NOT `fetch`. Node's built-in
- * `fetch` (undici) presents a TLS fingerprint that syndication.twitter.com
- * rejects with HTTP 429 ("Rate limit exceeded" body, length 20) on the
- * FIRST request from any IP — it's a TLS-fingerprint block, not a true
- * rate limit. Verified 2026-05-29: same machine, same IP, same second:
- * curl=200, `node -e "https.get(...)"` = 200, but `node -e "fetch(...)"` =
- * 429 every time. `node:https` uses Node core OpenSSL bindings which
- * present a different (more permissive) JA3 to Twitter.
+ * Expected wire format — a flat array of {date, count}, one per day:
+ *   [{"date":"2026-05-29","count":3},{"date":"2026-05-28","count":0}, ...]
  *
- * Side effect: we bypass Next.js' fetch-level cache for this call. The
- * page-level `revalidate = 3600` (in /api/snapshot and /page.tsx) still
- * caches the rendered output, so we only actually hit the endpoint once
- * per region per hour, well under any plausible quota.
+ * The producer (your scraper of choice) is responsible for emitting
+ * dates in the user's tz and using inclusive YYYY-MM-DD format. We do
+ * NOT re-bucket UTC timestamps here — if the producer got the tz wrong
+ * commiter has no way to fix it. Missing days inside [from, to] are
+ * filled with count=0; days outside the window are dropped silently.
  *
- * Throws on transport / parse failure so the outer loop can fall through
- * to Nitter.
+ * Tolerant about shape: we accept an array directly OR an object with
+ * a `days` field (so a producer can ship `{days, generated_at, ...}`).
  */
-async function fetchSyndicationProfile(
-  login: string,
-  tz: string,
+async function fetchTwitterDataUrl(
+  url: string,
   from: string,
   to: string,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _revalidate: number
-): Promise<ParsedRss> {
-  const path = `/srv/timeline-profile/screen-name/${encodeURIComponent(login)}`;
-  const body = await httpsGetText(SYNDICATION_HOST, path);
-
-  // The Next.js page embeds initial props in this exact script tag.
-  const m = body.match(
-    /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/
-  );
-  if (!m) {
-    throw new Error("no __NEXT_DATA__ script tag (auth wall or layout change)");
-  }
-  let data: unknown;
+  revalidate: number
+): Promise<Day[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  let raw: unknown;
   try {
-    data = JSON.parse(m[1]!);
-  } catch (err) {
-    throw new Error(
-      `__NEXT_DATA__ JSON parse failed: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-
-  // Walk: data.props.pageProps.timeline.entries[].content.tweet.created_at
-  const entries = (
-    data as {
-      props?: {
-        pageProps?: {
-          timeline?: {
-            entries?: Array<{
-              type?: string;
-              content?: { tweet?: { created_at?: string } };
-            }>;
-          };
-        };
-      };
-    }
-  )?.props?.pageProps?.timeline?.entries;
-
-  if (!Array.isArray(entries)) {
-    throw new Error("timeline.entries missing in __NEXT_DATA__ payload");
-  }
-
-  const counts = new Map<string, number>();
-  let parsedItems = 0;
-  let inWindowItems = 0;
-
-  for (const e of entries) {
-    if (e?.type !== "tweet") continue;
-    const raw = e.content?.tweet?.created_at;
-    if (!raw) continue;
-    const t = new Date(raw);
-    if (Number.isNaN(t.getTime())) continue;
-    parsedItems++;
-    const key = dateKey(t, tz);
-    if (key >= from && key <= to) inWindowItems++;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-
-  const rows = Array.from(counts, ([date, count]) => ({ date, count }));
-  return {
-    days: fillMissingDays(rows, from, to),
-    parsedItems,
-    inWindowItems,
-  };
-}
-
-/**
- * Promise wrapper around `https.get` so we can use a TLS fingerprint that
- * isn't undici's. Throws on non-2xx, timeouts, or socket errors. Body is
- * always returned as a UTF-8 string — the response is small enough
- * (~430KB) to materialize fully.
- */
-function httpsGetText(host: string, path: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const req = https.get(
-      {
-        hostname: host,
-        path,
-        headers: {
-          "User-Agent": USER_AGENT,
-          Accept: "text/html,application/xhtml+xml,*/*",
-        },
-      },
-      (res) => {
-        const status = res.statusCode ?? 0;
-        if (status < 200 || status >= 300) {
-          // Drain the body to free the socket, then reject.
-          res.resume();
-          reject(new Error(`HTTP ${status}`));
-          return;
-        }
-        const chunks: Buffer[] = [];
-        res.on("data", (c: Buffer) => chunks.push(c));
-        res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-        res.on("error", reject);
-      }
-    );
-    req.setTimeout(FETCH_TIMEOUT_MS, () => {
-      req.destroy(new Error(`timeout after ${FETCH_TIMEOUT_MS}ms`));
+    const res = await fetch(url, {
+      signal: controller.signal,
+      next: { revalidate },
     });
-    req.on("error", reject);
-  });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    raw = await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+
+  // Shape unwrapping: prefer { days: [...] }, fall back to raw array.
+  const candidate = Array.isArray(raw)
+    ? raw
+    : (raw as { days?: unknown })?.days;
+  if (!Array.isArray(candidate)) {
+    throw new Error(
+      "X_DATA_URL JSON must be Day[] or { days: Day[] } (got: " +
+        typeof raw +
+        ")"
+    );
+  }
+
+  const rows: Array<{ date: string; count: number }> = [];
+  for (const item of candidate) {
+    if (!item || typeof item !== "object") continue;
+    const d = (item as { date?: unknown }).date;
+    const c = (item as { count?: unknown }).count;
+    if (typeof d !== "string" || typeof c !== "number") continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+    if (d < from || d > to) continue;
+    rows.push({ date: d, count: c });
+  }
+
+  return fillMissingDays(rows, from, to);
 }
 
 /**

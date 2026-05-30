@@ -26,6 +26,14 @@ export type ChannelSnapshot = {
   streak_current: number;
   streak_longest: number;
   today_count: number;
+  /**
+   * True when this channel has no live data source wired up and all the
+   * counts below are zero-fill placeholders. Consumers (page.tsx) use
+   * this to hide the panel entirely and avoid the AND-streak collapsing
+   * to permanent zero. Omitted (undefined) when the channel rendered
+   * from real data.
+   */
+  offline?: boolean;
 };
 
 export type Snapshot = {
@@ -57,17 +65,23 @@ export async function getSnapshot(daysRequested = 365): Promise<Snapshot> {
   const today = dateKey(now, tz);
   const from = addDays(today, -(days - 1));
 
-  const [ghDays, twDays] = await Promise.all([
+  const [ghDays, twResult] = await Promise.all([
     fetchGithubDays({ login: githubLogin, token: githubToken, from, to: today }),
     fetchTwitterDaysSafe(xLogin, tz, from, today),
   ]);
 
   const todayIndex = ghDays.length - 1;
   const ghStreak = computeStreak(ghDays, { today_index: todayIndex });
-  const twStreak = computeStreak(twDays, { today_index: todayIndex });
+  const twStreak = computeStreak(twResult.days, { today_index: todayIndex });
 
-  const combined = combineDays(ghDays, twDays, "and");
-  const combinedStreak = computeStreak(combined, { today_index: todayIndex });
+  // When the Twitter source is offline (no scraper wired up, fallbacks
+  // all failed), the AND-streak across both channels would collapse to
+  // permanent zero. That's misleading — GitHub kept shipping, we just
+  // can't see Twitter. Degrade gracefully to a github-only combined.
+  const combinedDays = twResult.offline
+    ? ghDays
+    : combineDays(ghDays, twResult.days, "and");
+  const combinedStreak = computeStreak(combinedDays, { today_index: todayIndex });
 
   return {
     generated_at: now.toISOString(),
@@ -81,16 +95,17 @@ export async function getSnapshot(daysRequested = 365): Promise<Snapshot> {
         today_count: ghStreak.today_count,
       },
       twitter: {
-        days: twDays,
+        days: twResult.days,
         streak_current: twStreak.current,
         streak_longest: twStreak.longest,
         today_count: twStreak.today_count,
+        ...(twResult.offline ? { offline: true } : {}),
       },
     },
     combined: {
       streak_current: combinedStreak.current,
       streak_longest: combinedStreak.longest,
-      mode: "and",
+      mode: twResult.offline ? "or" : "and",
     },
   };
 }
@@ -101,26 +116,29 @@ export async function getSnapshot(daysRequested = 365): Promise<Snapshot> {
  * the same way — we log + treat as offline so the GitHub panel keeps
  * working in a fresh setup.
  */
+type TwitterFetchResult = { days: Day[]; offline: boolean };
+
 async function fetchTwitterDaysSafe(
   login: string,
   tz: string,
   from: string,
   to: string
-): Promise<Day[]> {
+): Promise<TwitterFetchResult> {
   if (!login) {
-    console.warn("[snapshot] X_LOGIN not set — Twitter panel will render empty");
-    return fillMissingDays([], from, to);
+    console.warn("[snapshot] X_LOGIN not set — Twitter panel will be hidden");
+    return { days: fillMissingDays([], from, to), offline: true };
   }
   try {
-    return await fetchTwitterDays({ login, tz, from, to });
+    const days = await fetchTwitterDays({ login, tz, from, to });
+    return { days, offline: false };
   } catch (err) {
     if (err instanceof TwitterFeedOfflineError) {
       console.warn(
         `[snapshot] Twitter feed offline; attempts=${JSON.stringify(err.attempts)}`
       );
-      return fillMissingDays([], from, to);
+      return { days: fillMissingDays([], from, to), offline: true };
     }
     console.warn("[snapshot] Twitter fetch threw — treating as offline:", err);
-    return fillMissingDays([], from, to);
+    return { days: fillMissingDays([], from, to), offline: true };
   }
 }

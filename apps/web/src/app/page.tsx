@@ -18,11 +18,15 @@ export default async function Page() {
     error = e instanceof Error ? e.message : String(e);
   }
 
-  // "did we ship today?" answers YES iff BOTH channels shipped today
-  // (preserves the AND semantic of combined.streak_current).
+  // "did we ship today?" semantics:
+  //   • Both channels live  → YES iff BOTH shipped (preserves AND streak)
+  //   • Twitter offline    → YES iff GitHub shipped (don't punish the
+  //                            user for a missing data source they didn't
+  //                            choose to wire up)
   const ghToday = snapshot?.channels.github.today_count ?? 0;
   const xToday = snapshot?.channels.twitter.today_count ?? 0;
-  const shippedBoth = ghToday > 0 && xToday > 0;
+  const xOffline = snapshot?.channels.twitter.offline === true;
+  const shipped = xOffline ? ghToday > 0 : ghToday > 0 && xToday > 0;
 
   return (
     <main className="min-h-screen px-4 py-8 sm:px-6 sm:py-12 max-w-6xl mx-auto">
@@ -47,10 +51,10 @@ export default async function Page() {
               <div
                 className={
                   "mt-2 text-6xl sm:text-7xl font-mono leading-none tabular-nums " +
-                  (shippedBoth ? "text-nerv-amber" : "text-nerv-orange")
+                  (shipped ? "text-nerv-amber" : "text-nerv-orange")
                 }
               >
-                {shippedBoth ? "yes." : "no."}
+                {shipped ? "yes." : "no."}
               </div>
               {oneliner && (
                 <p className="mt-3 text-sm sm:text-base text-nerv-text/70 lowercase font-mono">
@@ -69,32 +73,51 @@ export default async function Page() {
                     {ghToday > 0 ? `+${ghToday} commits` : "idle"}
                   </span>
                 </span>
-                <span aria-hidden>·</span>
-                <span>
-                  x{" "}
-                  <span
-                    className={
-                      xToday > 0 ? "text-nerv-amber" : "text-nerv-text/40"
-                    }
-                  >
-                    {xToday > 0 ? `+${xToday} tweets` : "idle"}
-                  </span>
-                </span>
+                {!xOffline && (
+                  <>
+                    <span aria-hidden>·</span>
+                    <span>
+                      x{" "}
+                      <span
+                        className={
+                          xToday > 0 ? "text-nerv-amber" : "text-nerv-text/40"
+                        }
+                      >
+                        {xToday > 0 ? `+${xToday} tweets` : "idle"}
+                      </span>
+                    </span>
+                  </>
+                )}
               </div>
             </header>
 
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div
+              className={
+                xOffline
+                  ? "grid gap-4"
+                  : "grid gap-4 sm:grid-cols-2"
+              }
+            >
               <MagiPanel
                 label="GITHUB"
                 unit="commits"
                 data={snapshot.channels.github}
               />
-              <MagiPanel
-                label="X"
-                unit="tweets"
-                data={snapshot.channels.twitter}
-              />
+              {!xOffline && (
+                <MagiPanel
+                  label="X"
+                  unit="tweets"
+                  data={snapshot.channels.twitter}
+                />
+              )}
             </div>
+
+            {xOffline && (
+              <p className="mt-3 text-[10px] uppercase tracking-widest text-nerv-text/30">
+                x panel hidden — set <code className="text-nerv-text/50">X_DATA_URL</code> or{" "}
+                <code className="text-nerv-text/50">X_NITTER_HOST</code> in env to enable
+              </p>
+            )}
 
             <footer className="mt-8 text-[10px] uppercase tracking-widest text-nerv-text/30">
               {snapshot.generated_at.slice(0, 10)} ·{" "}

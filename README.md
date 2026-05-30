@@ -16,9 +16,16 @@ pnpm install
 
 # 2. Configure
 cp .env.example apps/web/.env.local
-#   - GITHUB_TOKEN: PAT with `read:user`
-#   - GITHUB_LOGIN: your GitHub handle (default: anishthite)
-#   - X_LOGIN:      your X / Twitter handle, no leading @
+#   - GITHUB_TOKEN:  PAT with `read:user`
+#   - GITHUB_LOGIN:  your GitHub handle (default: anishthite)
+#   - X_LOGIN:       your X / Twitter handle, no leading @
+#
+#   Optional Twitter source (pick at most one — see .env.example):
+#   - X_DATA_URL:    URL serving a pre-built [{date,count}] JSON
+#   - X_NITTER_HOST: hostname of your self-hosted Nitter (see docs/SELF_HOST_NITTER.md)
+#
+#   With neither set, the Twitter panel is hidden and the GitHub panel
+#   fills the row — a valid GitHub-only setup.
 
 # 3. Run
 pnpm dev
@@ -32,7 +39,7 @@ That's the whole setup. No migrations, no ingest cron, no second machine.
 On each cache miss (every ~1 hour) the Next.js SSR pipeline pulls:
 
 - **GitHub** — GraphQL `contributionsCollection` (365-day calendar, private contribs included with `read:user`).
-- **X / Twitter** — Nitter RSS via `xcancel.com` with two fallback hosts. Surfaces the most recent ~20 tweets per feed; older squares in the X heatmap stay grey by design.
+- **X / Twitter** — read from `X_DATA_URL` if set (your scraper writes JSON, commiter reads it). Falls back to self-hosted Nitter via `X_NITTER_HOST`, then to the public Nitter pool. If all four tiers fail, the Twitter panel is hidden entirely so the dashboard degrades to a clean GitHub-only view rather than showing fake zeros. See `docs/SELF_HOST_NITTER.md` for the self-host path.
 
 Streak math runs in-memory and the result is rendered server-side. The JSON snapshot is also exposed at `GET /api/snapshot?days=N` (cached `s-maxage=3600`, SWR 10min) for any future client.
 
@@ -49,7 +56,7 @@ PLAN.md                Master spec
 
 ## Deploy
 
-Push to a Vercel project. Set `GITHUB_TOKEN`, `GITHUB_LOGIN`, `X_LOGIN`, and (optionally) `NERV_TZ` as project env vars. No further setup.
+Push to a Vercel project. Required env vars: `GITHUB_TOKEN`, `GITHUB_LOGIN`. Optional: `X_LOGIN` + (`X_DATA_URL` OR `X_NITTER_HOST`) to enable the Twitter panel. `NERV_TZ` to override the default `America/Los_Angeles` bucketing. No other setup.
 
 ## Status
 
