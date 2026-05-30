@@ -1,0 +1,68 @@
+name: refresh-x-days
+
+# Daily refresh of apps/web/src/data/x-days.json from socialdata.tools.
+# Commits the new counts back to main, which triggers a Vercel rebuild.
+#
+# Schedule: 09:00 UTC ≈ 01:00 PST / 02:00 PDT (the exact local time drifts
+# with US DST — both are well past midnight PT so the prior day's tweets
+# are settled by then).
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-x-days
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # GITHUB_TOKEN has contents: write per the top-level permissions
+          # block above; that's enough to push back to the default branch
+          # for repos without branch-protection rules requiring a PAT.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # F6: SHA-pin third-party action so a moving major tag can't pull in
+      # a malicious commit during a run that already has GITHUB_TOKEN and
+      # SOCIALDATA_API_KEY in scope. The pinned SHA is pnpm/action-setup v3.0.0.
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda  # v3.0.0
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: refresh x-days
+        env:
+          SOCIALDATA_API_KEY: ${{ secrets.SOCIALDATA_API_KEY }}
+          X_LOGIN: anishthite
+        run: pnpm tsx scripts/refresh-x-days.ts
+
+      - name: commit if changed
+        run: |
+          git diff --quiet apps/web/src/data/x-days.json || (
+            git config user.name "x-refresh-bot" &&
+            git config user.email "noreply@github.com" &&
+            git add apps/web/src/data/x-days.json &&
+            # F7: rebase any in-flight changes on the branch before commit/push
+            # to avoid losing a queued-schedule run's work to a non-fast-forward
+            # rejection after a finishing workflow_dispatch. The data file is
+            # regenerated from scratch each run with overlap-merge logic, so
+            # replaying our result on top of a newer base yields the same
+            # authoritative state.
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" &&
+            git commit -m "data: refresh x-days $(date -u +%Y-%m-%d)" &&
+            git push
+          )

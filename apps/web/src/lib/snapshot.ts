@@ -125,7 +125,9 @@ async function fetchTwitterDaysSafe(
   to: string
 ): Promise<TwitterFetchResult> {
   if (!login) {
-    console.warn("[snapshot] X_LOGIN not set — Twitter panel will be hidden");
+    console.warn(
+      "[snapshot] X_LOGIN not set — Twitter panel will be hidden (set X_LOGIN to enable; data file is bundled at apps/web/src/data/x-days.json)"
+    );
     return { days: fillMissingDays([], from, to), offline: true };
   }
   try {

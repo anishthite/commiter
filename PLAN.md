@@ -19,8 +19,8 @@ Make falling off the wagon visible enough that I don't.
 Out of scope (deferred):
 
 - Push / SMS / OS-level nudges (see Followups L-002).
-- Manual `/api/ship` fallback for when X feeds are dark (L-001).
-- Long-term Twitter history beyond what Nitter RSS surfaces (L-003).
+- Manual `/api/ship` fallback for when the X data file is stale (L-001).
+- Real-time X refresh (currently bounded by the daily GH Action; L-003).
 
 ---
 
@@ -34,7 +34,7 @@ Out of scope (deferred):
 │         page.tsx                                               │
 │           getSnapshot(365)                                     │
 │             ├ fetchGithubDays    next:{revalidate:3600}        │
-│             └ fetchTwitterDays   next:{revalidate:3600}        │
+│             └ fetchTwitterDays   import "./data/x-days.json"   │
 │           computeStreak × 2 + combineDays                      │
 │           render <MagiPanel/> × 2                              │
 │                                                                │
@@ -46,7 +46,7 @@ Out of scope (deferred):
 └────────────────────────────────────────────────────────────────┘
 ```
 
-Two upstream fetches, each cached at the Next.js fetch layer for 1 hour, recomputed in-memory each SSR. The page itself is ISR (`export const revalidate = 3600`) so static visitors hit a CDN edge cache, then the underlying data refreshes at most once per hour.
+One upstream fetch (GitHub GraphQL) cached at the Next.js fetch layer for 1 hour; X day-counts are imported from a bundled JSON file refreshed daily by `.github/workflows/refresh-x-days.yml`. Streak math runs in-memory each SSR. The page itself is ISR (`export const revalidate = 3600`) so static visitors hit a CDN edge cache and rehydrate at most once per hour.
 
 > Supersedes 2026-05-23 plan (Mac ingestor + Turso + pi-chrome). See `implementation-notes/2026-05-28-stateless-refactor.html` for the decision log.
 
@@ -62,17 +62,16 @@ Two upstream fetches, each cached at the Next.js fetch layer for 1 hour, recompu
 - Cache: `next: { revalidate: 3600 }`.
 - Cost: 1 GraphQL call per cache miss. GitHub limits = 5000/hr per token — irrelevant at this volume.
 
-### X / Twitter — Nitter RSS, fallback chain
+### X / Twitter — bundled JSON, refreshed daily by GitHub Action
 
-- Hosts tried in order: `xcancel.com` → `nitter.privacyredirect.com` → `nitter.poast.org`.
-- URL: `https://<host>/<handle>/rss`.
-- Auth: none.
-- Parse: regex extract `<pubDate>` per `<item>` (Atom `<published>` fallback). Bucket each into a PT `YYYY-MM-DD` key via `Intl.DateTimeFormat('en-CA', { timeZone: tz, ... })`.
-- Cache: `next: { revalidate: 3600 }`.
-- Failure: all hosts dead → `TwitterFeedOfflineError` → snapshot substitutes a zero-filled day array and logs a warning. Dashboard stays up; the X panel renders empty.
-- **Honest limitation:** Nitter RSS only surfaces the most recent ~20 tweets. The X heatmap fills out as far back as the feed reaches — for daily posters that's the past 1–3 weeks. Older squares stay grey. We do not lie about this; the streak math operates over the data we actually see.
+- Render path: `apps/web/src/lib/twitter.ts` does `import xDaysData from "../data/x-days.json"`. No network at request time.
+- Refresh path: `.github/workflows/refresh-x-days.yml` runs nightly (`cron: "0 9 * * *"` ≈ 01:00–02:00 PT), invokes `pnpm tsx scripts/refresh-x-days.ts`, and commits the new counts back to `main`. Vercel rebuild ships the new data.
+- Refresh script: looks up the numeric `user_id` from `https://api.socialdata.tools/twitter/user/{handle}` (cached in the JSON), then paginates `GET /twitter/search?query=from:<handle>%20since:<date>&type=Latest`. Each tweet's `tweet_created_at` is bucketed via `Intl.DateTimeFormat("en-CA", { timeZone: NERV_TZ })` — matches `dateKey()` in `streak.ts` exactly. Incremental runs re-pull the last 2 days to absorb late-arriving tweets; older days are never decremented.
+- Auth: `SOCIALDATA_API_KEY` in GitHub repo secrets. Runtime app never reads it.
+- Failure: malformed/empty JSON → `TwitterFeedOfflineError` → panel hidden, combined streak drops to OR mode and reports GitHub only.
+- **Tradeoff:** data freshness is bounded by the daily Action + Vercel deploy. Today's tweets show up tomorrow. Re-run the workflow with `workflow_dispatch` for an ad-hoc refresh.
 
-The official X API v2 free tier read access is dead. The syndication profile endpoint is cookie-gated and non-chronological in 2026. Nitter RSS is the only working unauth source for "give me a handle's recent tweets." See `scout-twitter-syndication.md` for the detailed research.
+The earlier live-scrape approaches (now removed) were blocked from Vercel egress IPs or returned stale curated data. See `implementation-notes/2026-05-29-socialdata-migration.html` for the decision log.
 
 ---
 
@@ -107,7 +106,7 @@ apps/web/
     └── lib/
         ├── streak.ts       # pure math + tz helpers
         ├── github.ts       # GraphQL fetch + buffer/trim
-        ├── twitter.ts      # Nitter RSS fallback chain
+        ├── twitter.ts      # reads bundled apps/web/src/data/x-days.json
         ├── snapshot.ts     # composes everything; returns wire shape
         ├── heatmap.ts      # toWeeksGrid, intensity
         └── nerv/
@@ -135,9 +134,9 @@ Set in `apps/web/.env.local` for dev. Set as Vercel project env vars for prod.
 
 ## §7. Followups (deferred, not part of v0)
 
-- **L-001** — Manual ship fallback: `POST /api/ship` + an in-dashboard button. Useful when Nitter is fully dark and you want to mark "yes I posted" without waiting for the feed to come back.
+- **L-001** — Manual ship fallback: `POST /api/ship` + an in-dashboard button. Useful when you want to mark "yes I posted" without waiting for the next daily refresh to ship.
 - **L-002** — Nudge mechanism: Vercel Cron at e.g. 18:00 + 23:00 PT hitting an `/api/nudge` route that pings Pushover / Resend / a Slack webhook when today is empty.
-- **L-003** — Twitter history depth: Vercel Cron hourly + Upstash Redis free tier persisting `{date, count}` daily rollups, so the X heatmap fills out beyond the Nitter window. Pure additive change.
+- **L-003** — Sub-daily X freshness: run the refresh workflow on a tighter cron, or move the fetch into a Vercel Cron route that writes to KV. Pure additive change.
 - **L-004** — Build-time prerender wart: page is statically generated at build time with whatever data the build environment can reach. If `GITHUB_TOKEN` isn't set during the Vercel build, the SYS:FAULT branch gets baked in for up to an hour after deploy. Mitigations: set env at build, or flip `page.tsx` back to `force-dynamic` (fetch caching still works).
 
 ---

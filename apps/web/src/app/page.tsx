@@ -114,8 +114,10 @@ export default async function Page() {
 
             {xOffline && (
               <p className="mt-3 text-[10px] uppercase tracking-widest text-nerv-text/30">
-                x panel hidden — set <code className="text-nerv-text/50">X_DATA_URL</code> or{" "}
-                <code className="text-nerv-text/50">X_NITTER_HOST</code> in env to enable
+                x panel hidden — set <code className="text-nerv-text/50">X_LOGIN</code> and run the{" "}
+                <code className="text-nerv-text/50">refresh-x-days</code> action (needs{" "}
+                <code className="text-nerv-text/50">SOCIALDATA_API_KEY</code> in GH Secrets); data file is bundled at{" "}
+                <code className="text-nerv-text/50">apps/web/src/data/x-days.json</code>
               </p>
             )}
 

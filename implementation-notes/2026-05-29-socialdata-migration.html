@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>2026-05-29 — X data source: bundled JSON via socialdata.tools daily refresh</title>
+<style>
+  body { font: 13px/1.45 ui-monospace, monospace; max-width: 980px; margin: 2rem auto; padding: 0 1rem; }
+  h1, h2 { font-family: ui-sans-serif, system-ui; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; }
+  th, td { border: 1px solid #ccc; padding: 4px 8px; vertical-align: top; }
+  th { background: #f4f4f4; text-align: left; }
+  code { background: #f4f4f4; padding: 1px 4px; }
+  .id { white-space: nowrap; font-weight: bold; }
+</style></head>
+<body>
+<h1>2026-05-29 — X data source migration: live scrape → bundled JSON via daily GH Action</h1>
+
+<p><strong>Scope.</strong> Replace the runtime live-scrape ladder in <code>apps/web/src/lib/twitter.ts</code>
+(public RSS pool, self-hosted RSS, <code>X_DATA_URL</code> HTTP fetch) with a single bundled
+<code>apps/web/src/data/x-days.json</code> imported at build time. A new GitHub Action
+(<code>.github/workflows/refresh-x-days.yml</code>) runs daily, paginates the user's recent
+tweets from <code>api.socialdata.tools</code>, buckets each into a <code>NERV_TZ</code> day,
+merges into the JSON, and commits back to <code>main</code> — Vercel rebuild ships the new
+data. The runtime app no longer touches any X API.</p>
+
+<h2>Decisions</h2>
+<table>
+  <tr><th>ID</th><th>What</th><th>Why</th></tr>
+  <tr><td class="id">D-029</td><td>Delete tiers 2 (self-hosted RSS via <code>X_NITTER_HOST</code>) and 3 (public RSS pool: nitter.net / nitter.poast.org / xcancel.com / nitter.privacyredirect.com) entirely.</td><td>Both were already known-broken from Vercel egress (Cloudflare challenges, DNS fail, RSS allowlist sentinels). Keeping them as "defense in depth" was net-negative: dead code that ran on every cache miss and produced misleading <code>attempts</code> arrays in offline logs. The new architecture has zero live network calls at render time, so the fallback ladder collapses to "is the bundled JSON valid?".</td></tr>
+  <tr><td class="id">D-030</td><td>Use a bundled JSON imported via <code>import xDaysData from "../data/x-days.json"</code> rather than (a) <code>fs.readFile</code> at runtime or (b) <code>fetch(raw.githubusercontent.com)</code>.</td><td>The repo's <code>tsconfig.base.json</code> already enables <code>resolveJsonModule</code>, so the import is a one-liner with full TS narrowing. Bundling the JSON into the Next.js build output means render-time has zero I/O and zero network — the data IS the deploy. <code>fs</code> would work but adds an async boundary for nothing; <code>fetch</code> reintroduces the cache-coherence problem the migration is trying to escape (the whole point is that the deploy and the data are atomically versioned).</td></tr>
+  <tr><td class="id">D-031</td><td>Treat empty <code>days[]</code> as offline (throw <code>TwitterFeedOfflineError</code>) rather than rendering an all-zero heatmap.</td><td>Empty <code>days</code> is the legitimate first-deploy state before the GH Action has ever run. <code>snapshot.ts</code>'s existing catch-and-degrade path hides the panel and switches combined mode to <code>"or"</code> — exactly the right behavior. Rendering all-zeros would silently lie ("I posted nothing in 365 days") which is the same antipattern the syndication.twitter.com tier (removed in D-028) created.</td></tr>
+  <tr><td class="id">D-032</td><td>Preserve <code>X_LOGIN</code>, <code>FetchTwitterOpts</code>, <code>fetchTwitterDays</code>, <code>TwitterFeedOfflineError</code> as the public surface — signature-identical to the pre-migration module.</td><td>The one consumer (<code>snapshot.ts:132</code>) doesn't need to change. <code>X_LOGIN</code> is still used for panel-presence logic (empty → panel hidden, snapshot.ts:126). The <code>tz</code> param is now unused at read time (the refresh script does the bucketing) but kept so the call site is byte-identical.</td></tr>
+  <tr><td class="id">D-033</td><td>Refresh script lives at <code>scripts/refresh-x-days.ts</code>, invoked via <code>pnpm tsx scripts/refresh-x-days.ts</code>. <code>tsx</code> added at the workspace root (not as a per-package dep).</td><td>The script is workspace-level glue, not an <code>apps/web</code> concern. Putting <code>tsx</code> at the root keeps <code>apps/web/package.json</code> focused on the deployed app. <code>tsx</code> over <code>ts-node</code> because <code>tsx</code> is ESM-native and faster cold-start — matters for a GH Action where install + run is the entire wall-clock budget.</td></tr>
+  <tr><td class="id">D-034</td><td>Incremental refresh: <code>since = max(existing date) − 2 days</code>; full backfill from <code>BACKFILL_SINCE</code> (default 2024-01-01) only when <code>days[]</code> is empty. Within the 2-day overlap, new fetch REPLACES existing counts. Outside the overlap, days are NEVER decremented.</td><td>Two-day overlap absorbs late-arriving tweets (deletes, edits, socialdata indexing lag) without requiring a full re-pull. Never-decrement-outside-overlap protects against socialdata's quota-trimmed responses silently zeroing out historical data — the bundled JSON is the cumulative source of truth, not the API.</td></tr>
+  <tr><td class="id">D-035</td><td>Refresh script's <code>dateKey()</code> uses <code>Intl.DateTimeFormat("en-CA", { timeZone: NERV_TZ, year: "numeric", month: "2-digit", day: "2-digit" })</code> — byte-identical to <code>streak.ts:dateKey()</code>.</td><td>The TZ boundary is the single most fragile invariant in the system. If the producer and consumer disagree on the bucket-day for a given UTC timestamp, the heatmap silently misaligns. Copy-pasting the exact <code>Intl</code> call into the script (rather than importing it) is intentional: the script must keep working as a standalone tsx run with no <code>@/lib</code> path resolution.</td></tr>
+  <tr><td class="id">D-036</td><td>Cron at <code>0 9 * * *</code> (09:00 UTC ≈ 01:00 PST / 02:00 PDT). Default <code>GITHUB_TOKEN</code> with <code>contents: write</code> permission for the push; no PAT.</td><td>09:00 UTC is well past midnight PT, so the prior day's tweets are settled by then. <code>GITHUB_TOKEN</code> avoids the secret-rotation overhead of a PAT and works for any repo without branch-protection rules requiring a verified author — if branch protection is added later, this would need to be revisited.</td></tr>
+</table>
+
+<h2>Tradeoffs</h2>
+<table>
+  <tr><th>ID</th><th>Tradeoff</th></tr>
+  <tr><td class="id">T-017</td><td>Data freshness is now bounded by the daily Action + Vercel deploy cycle. Tweets posted at 18:00 PT show up the morning after the next 01:00–02:00 PT refresh, then take another minute or two to ship through Vercel. Worst case: ~26-hour latency. Acceptable for a "did I ship today?" tracker; if the user wants sub-hour freshness they can <code>workflow_dispatch</code> manually after posting.</td></tr>
+  <tr><td class="id">T-018</td><td><code>SOCIALDATA_API_KEY</code> is a paid-API dependency. If the key is revoked or socialdata.tools goes down, the daily refresh starts no-op'ing (script exits 1, no commit, JSON ages). The dashboard keeps rendering stale data indefinitely — there is no "data is stale" warning. Mitigation deferred: a future enhancement could add a <code>generated_at</code>-age check in <code>twitter.ts</code> and degrade after N days.</td></tr>
+  <tr><td class="id">T-019</td><td>JSON file lives inside the Next.js build output, so even a one-character change to the data file triggers a full Vercel rebuild. At today's repo size (small) this is ~30s of CI; if the repo grows large this becomes friction. Could be revisited by moving the JSON to a separate sibling repo and fetching via <code>raw.githubusercontent.com</code> with <code>next: { revalidate }</code> — but that re-introduces the cache-coherence problem D-030 deleted.</td></tr>
+  <tr><td class="id">T-020</td><td>Script's <code>since:</code> arg to socialdata's search is interpreted on UTC dates, but we re-bucket each tweet to NERV_TZ regardless. There's a ~17-hour edge band where a tweet's UTC date differs from its PT date, but the 2-day overlap window absorbs it. If <code>OVERLAP_DAYS</code> were tightened to 0, this would silently lose tweets near midnight PT.</td></tr>
+</table>
+
+<h2>Deviations from the brief</h2>
+<table>
+  <tr><th>ID</th><th>What</th><th>Why</th></tr>
+  <tr><td class="id">X-001</td><td>Did NOT delete the <code>tz</code> param from <code>FetchTwitterOpts</code> even though it's now unused at read time.</td><td>Brief says "Preserve the exported surface… Same signatures." Removing the param would break that contract even if no consumer notices. Documented in the type's JSDoc as "ignored at read time".</td></tr>
+  <tr><td class="id">X-002</td><td>Used <code>function die(): never</code> declaration instead of arrow form in the refresh script.</td><td>Arrow form with <code>: never</code> return annotation didn't trigger TS's control-flow narrowing for downstream <code>raw</code>/<code>counts</code>/<code>userId</code> bindings after <code>die()</code> calls. Function declaration fixed it. No behavioral change.</td></tr>
+  <tr><td class="id">X-003</td><td>Page env-hint copy mentions <code>refresh-x-days</code> action + <code>SOCIALDATA_API_KEY</code> in GH Secrets explicitly, rather than just "data file is bundled".</td><td>The brief said "mention SOCIALDATA_API_KEY for the Action, and that the data file is bundled." Made the copy concrete enough that a fresh-clone reader knows where to wire the secret without reading the README.</td></tr>
+  <tr><td class="id">X-004</td><td>Edited the lingering "Nitter" mention in <code>apps/web/src/lib/twitter.ts</code> module comment and in <code>PLAN.md</code>'s historical note, rather than leaving them as documentation.</td><td>Brief's validation step 5 said "no matches in code" for <code>nitter</code>/<code>xcancel</code> etc. Comments and PLAN.md aren't <em>code</em> per se, but the only carve-out the brief mentioned was for <code>implementation-notes/</code> HTML files. Scrubbed them to keep the grep clean; rephrased to "live-scraping experiments" without losing the historical context.</td></tr>
+</table>
+
+<h2>Reversibility</h2>
+<table>
+  <tr><th>ID</th><th>What</th></tr>
+  <tr><td class="id">R-005</td><td>Easily reversible: <code>git revert</code> restores the Nitter ladder. The JSON file becomes orphaned but harmless (will just sit in the repo). The Action would need to be deleted or disabled separately.</td></tr>
+  <tr><td class="id">R-006</td><td>Switching socialdata.tools → a different provider is a contained change: rewrite <code>scripts/refresh-x-days.ts</code>'s <code>apiGet</code>/<code>resolveUserId</code>/<code>fetchTweetDayCounts</code> functions to hit the new API, keep the merge + write logic. The data file shape and the runtime read path don't change.</td></tr>
+</table>
+
+<h2>Open Questions</h2>
+<table>
+  <tr><th>ID</th><th>Question</th></tr>
+  <tr><td class="id">Q-006</td><td>Will <code>GITHUB_TOKEN</code> with <code>contents: write</code> work for pushing back to <code>main</code> on this repo? If branch protection rules require a verified signature or status checks, the workflow will fail at push time and we'll need a PAT (or a deploy key, or a GitHub App). Not testable from the worker session — first scheduled run will surface it.</td></tr>
+  <tr><td class="id">Q-007</td><td>What's socialdata.tools' rate limit / cost-per-call? Script paginates up to 200 pages on full backfill; if each page is metered, the first run could be expensive. Could be worth capping <code>MAX_PAGES</code> tighter or staging the backfill across multiple runs.</td></tr>
+  <tr><td class="id">Q-008</td><td>Does socialdata's <code>since:</code> filter include or exclude the boundary day? Treating it as inclusive in the merge logic; if it's exclusive there's a 1-day gap that the 2-day overlap absorbs anyway. Worth verifying after the first real run.</td></tr>
+</table>
+
+<h2>Followups</h2>
+<table>
+  <tr><th>ID</th><th>What</th></tr>
+  <tr><td class="id">L-016</td><td>"Data is stale" detection: read <code>generated_at</code> from the JSON at render time and degrade the panel after N days (e.g. N=3). Catches socialdata outages and lapsed API keys without silently lying.</td></tr>
+  <tr><td class="id">L-017</td><td>Sub-daily X freshness: tighten cron to hourly, or move fetch into a Vercel Cron route writing to KV. Pure additive.</td></tr>
+  <tr><td class="id">L-018</td><td>Add a smoke test for <code>fetchTwitterDays</code> reading a fixture JSON. The repo currently has no tests, so this would be the seed of the test convention. Not in scope for this migration.</td></tr>
+</table>
+
+<h2>Review Fixes (post-merge)</h2>
+<p>Three adversarial reviewers (correctness, GHA security, robustness) ran against the worker's diff. One BLOCKER + three HIGHs + six MEDs landed; the fixes below were applied as F1–F10.</p>
+<table>
+  <tr><th>ID</th><th>Sev</th><th>Reviewer</th><th>Fix</th></tr>
+  <tr><td class="id">D-037 (F1)</td><td>HIGH</td><td>correctness</td><td><code>mergeCounts</code>'s fresh-copy loop now guards <code>merged.set(date, count)</code> with <code>if (fullBackfill || date &gt;= since)</code>. Pre-<code>since</code> PT dates that arrived as partial counts (UTC ⇔ PT boundary noise) no longer clobber the prior full-day totals. The day before the overlap window is now genuinely never touched by an incremental merge.</td></tr>
+  <tr><td class="id">D-038 (F2)</td><td>BLOCKER</td><td>robustness</td><td>Three-layer defense against silent data loss when the API returns 200 + non-search-shaped body. (1) <code>apiGet</code> now throws on <code>{status:"error"}</code> / <code>{error:…}</code> envelopes after JSON parse. (2) <code>fetchTweetDayCounts</code> throws on the first page if <code>body.tweets</code> is <em>undefined</em> (not just empty). (3) <code>main()</code> refuses to write when <code>!fullBackfill &amp;&amp; mergedDays.length &lt; existing.days.length</code> — any genuine shrink requires an explicit re-backfill. False-positive risk on legit "user posted nothing" runs is acceptable; the brief flagged this and chose loud-failure over silent-shrink.</td></tr>
+  <tr><td class="id">D-039 (F3)</td><td>HIGH</td><td>robustness</td><td><code>apiGet</code> now retries on 429 + 5xx with exponential backoff (1s, 4s, 16s) up to 3 retries (4 attempts total). 429 honors <code>Retry-After</code> seconds if present. 4xx other than 429 throws immediately (auth/bad-request — not transient). Network-level <code>fetch</code> throws are also retried. Each retry logs status + wait time to stderr. Closes the 24h-staleness window from a single transient failure.</td></tr>
+  <tr><td class="id">D-040 (F4)</td><td>HIGH</td><td>both</td><td>Pagination loop now tracks the last <code>next_cursor</code> seen and whether termination was a real end-of-cursor-chain. If the loop exits via <code>pages &gt;= MAX_PAGES</code> while <code>next_cursor</code> was still present, it throws "hit MAX_PAGES=… but next_cursor still present — dataset is truncated". <code>MAX_PAGES</code> raised from 200 → 500 for headroom on heavy backfills.</td></tr>
+  <tr><td class="id">D-041 (F5)</td><td>MED</td><td>robustness</td><td>Skip the write entirely when nothing material changed. Compares sorted <code>days[]</code>, <code>user_id</code>, <code>handle</code>, and <code>bucketed_tz</code> via canonical JSON.stringify; if all four match, logs "no data changes — skipping write" and exits 0 without rewriting <code>generated_at</code>. The workflow's <code>git diff --quiet</code> then correctly no-ops. Avoids ~365 noise commits / Vercel rebuilds per year.</td></tr>
+  <tr><td class="id">D-042 (F6)</td><td>MED</td><td>gha-security</td><td>SHA-pinned the only third-party action: <code>pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda  # v3.0.0</code>. Mitigates the moving-major-tag supply-chain hazard for a workflow that has <code>GITHUB_TOKEN</code> + <code>SOCIALDATA_API_KEY</code> in scope. <code>actions/checkout@v4</code> and <code>actions/setup-node@v4</code> intentionally left as major-tag pins (first-party).</td></tr>
+  <tr><td class="id">D-043 (F7)</td><td>MED</td><td>gha-security</td><td>Commit step now does <code>git pull --rebase --autostash origin "${GITHUB_REF_NAME}"</code> between <code>git add</code> and <code>git commit</code>. Closes the schedule-after-dispatch race where a queued schedule run would hit non-fast-forward and lose its work. <strong>Deviation:</strong> brief specified plain <code>git pull --rebase</code>; added <code>--autostash</code> because the rebase runs with staged-but-uncommitted changes in the index, which plain <code>git pull --rebase</code> refuses. Autostash stashes the staged file, rebases, then re-applies — matches the brief's "replay our result on a newer base" semantics exactly.</td></tr>
+  <tr><td class="id">D-044 (F8)</td><td>MED</td><td>robustness</td><td><code>saveData</code> now writes to <code>DATA_PATH + ".tmp"</code> first and then <code>rename()</code>s. Mid-write crash leaves the real file intact rather than truncated/syntactically-invalid.</td></tr>
+  <tr><td class="id">D-045 (F9)</td><td>MED</td><td>correctness</td><td><code>twitter.ts</code> now tracks shape-valid rows separately from window-filtered rows. If <code>rawDays.length &gt; 0 &amp;&amp; shapeOk === 0</code>, throws <code>TwitterFeedOfflineError</code> with reason "all days[] entries failed shape validation" instead of returning an all-zero <code>Day[]</code>. Closes the asymmetric-validator-rot hazard.</td></tr>
+  <tr><td class="id">D-046 (F10)</td><td>MED</td><td>correctness</td><td>Producer + consumer now agree on the bucketing tz. (1) <code>refresh-x-days.ts</code> stamps <code>bucketed_tz: TZ</code> into the JSON output and into the <code>DataFile</code> type. (2) Seed <code>x-days.json</code> updated to include <code>"bucketed_tz": "America/Los_Angeles"</code>. (3) <code>twitter.ts</code> reads <code>file.bucketed_tz</code>: if present and <code>!== opts.tz</code>, throws <code>TwitterFeedOfflineError</code> with reason "tz mismatch: file=…, runtime=…". Absent (legacy files) logs a one-time stderr warning rather than throwing.</td></tr>
+</table>
+
+<h2>Deferred LOW/NIT followups (from reviewers, not fixed in this pass)</h2>
+<table>
+  <tr><th>ID</th><th>File:line</th><th>Description</th></tr>
+  <tr><td class="id">L-019</td><td><code>scripts/refresh-x-days.ts:dateKey</code> + <code>apps/web/src/lib/streak.ts:dateKey</code></td><td>No automated drift guard between the two byte-identical <code>dateKey()</code> copies. A future PR touching one without the other silently misaligns buckets. Add a vitest that imports both and asserts equal output across ~20 fixture timestamps (DST boundaries, ms precision, year-end). Also add a "MUST stay byte-identical with scripts/refresh-x-days.ts:dateKey" comment in <code>streak.ts:dateKey</code>. (robustness LOW)</td></tr>
+  <tr><td class="id">L-020</td><td><code>scripts/refresh-x-days.ts</code> pagination loop</td><td>Future-dated tweets (server-clock skew, malformed API rows) bucket to far-future <code>YYYY-MM-DD</code> keys and persist forever. Reject <code>t.getTime() &gt; Date.now() + 86_400_000</code> at bucket time. (robustness LOW)</td></tr>
+  <tr><td class="id">L-021</td><td><code>scripts/refresh-x-days.ts:dateKey</code> startup</td><td>Invalid <code>NERV_TZ</code> (e.g. <code>Not/Real</code>) crashes with a cryptic <code>RangeError: Invalid time zone specified</code> via the top-level catch. Validate at startup alongside <code>BACKFILL_SINCE</code> with a friendly <code>die(2, "Invalid NERV_TZ: …")</code>. (robustness LOW)</td></tr>
+  <tr><td class="id">L-022</td><td><code>scripts/refresh-x-days.ts</code> pagination loop, cursor handling</td><td>Some APIs return the literal string <code>"null"</code> for cursor termination; current code treats it as a real cursor and wastes one round-trip before the <code>nextCursor === cursor</code> guard catches it. Add <code>|| nextCursor === "null"</code> to the early-break. (robustness LOW)</td></tr>
+  <tr><td class="id">L-023</td><td><code>scripts/refresh-x-days.ts:apiGet</code> error path</td><td>Body echoed into error message could in theory contain the API key if socialdata ever reflects auth headers. Add <code>body.replace(API_KEY, "[REDACTED]")</code> defense-in-depth. GitHub Actions auto-masks <code>secrets.*</code> values in logs already, so the practical risk is only logs copied to a third place without the mask. (gha-security LOW)</td></tr>
+  <tr><td class="id">L-024</td><td><code>.github/workflows/refresh-x-days.yml</code> push step</td><td>Branch-protection / signed-commits escalation plan: default <code>GITHUB_TOKEN</code> push is unsigned and cannot bypass branch protection. If protection is enabled on <code>main</code>, the workflow fails at push and the dashboard staleness goes silent until a human looks at Actions logs. Decide between (a) PR-based commit via <code>peter-evans/create-pull-request</code>, (b) deploy key, (c) GitHub App, or (d) document the "main is unprotected" assumption explicitly. Currently captured as Q-006. (gha-security MED, deferred as a decision rather than a code fix)</td></tr>
+  <tr><td class="id">L-025</td><td><code>.github/workflows/refresh-x-days.yml</code> cron</td><td>Twice-daily cron (<code>0 9,21 * * *</code>) would catch most of today's posts before they're a day stale. Doubles socialdata cost marginally; pure UX improvement. Out of scope for the correctness pass per the brief. (gha-security LOW)</td></tr>
+  <tr><td class="id">L-026</td><td><code>.github/workflows/refresh-x-days.yml</code> workflow_dispatch</td><td>Add an actor guard so collaborators (if ever added) cannot trigger a 500-page full-backfill via <code>workflow_dispatch</code> and burn API quota: <code>if: github.event_name != 'workflow_dispatch' || github.actor == github.repository_owner</code>. Single-owner repo today, so blast radius is small; trivial defense-in-depth. (gha-security LOW)</td></tr>
+  <tr><td class="id">L-027</td><td><code>scripts/refresh-x-days.ts:resolveUserId</code> + <code>fetchTweetDayCounts</code></td><td>Handle change doesn't reset <code>days[]</code> — if the user changes <code>X_LOGIN</code>, the merge produces an alice/bob hybrid (alice's older days untouched, bob's recent days merged in). Force <code>fullBackfill=true</code> and reset <code>existing.days=[]</code> when <code>existing.handle !== HANDLE</code>. (correctness LOW)</td></tr>
+</table>
+
+<h2>Validation run</h2>
+<table>
+  <tr><th>Step</th><th>Result</th></tr>
+  <tr><td><code>pnpm install</code> (after adding <code>tsx</code> at root)</td><td>OK; +tsx 4.22.3.</td></tr>
+  <tr><td><code>pnpm --filter web typecheck</code></td><td>OK, no errors.</td></tr>
+  <tr><td>Standalone <code>tsc</code> on <code>scripts/refresh-x-days.ts</code> with <code>@types/node</code></td><td>OK, no errors (after X-002 fix).</td></tr>
+  <tr><td><code>pnpm --filter web build</code></td><td>OK; static prerender succeeds; offline-path logs visible in build output (expected — bundled JSON is empty until first Action run).</td></tr>
+  <tr><td><code>grep -rn "nitter\|Nitter\|NITTER\|xcancel" apps/web/src docs scripts .github .env.example README.md PLAN.md</code></td><td>No matches.</td></tr>
+  <tr><td><code>grep -rn "X_NITTER_HOST\|X_DATA_URL" apps/web/src .env.example README.md PLAN.md</code></td><td>No matches.</td></tr>
+  <tr><td>Exported surface of <code>twitter.ts</code></td><td><code>TwitterFeedOfflineError</code>, <code>FetchTwitterOpts</code>, <code>fetchTwitterDays</code> — exactly the three required.</td></tr>
+  <tr><td><code>SOCIALDATA_API_KEY="" pnpm tsx scripts/refresh-x-days.ts</code></td><td>Exits 2 with "SOCIALDATA_API_KEY is required" — env-validation path works.</td></tr>
+</table>
+
+</body>
+</html>
