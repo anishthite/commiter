@@ -32,9 +32,9 @@ jobs:
       # F6: SHA-pin third-party action so a moving major tag can't pull in
       # a malicious commit during a run that already has GITHUB_TOKEN and
       # SOCIALDATA_API_KEY in scope. The pinned SHA is pnpm/action-setup v3.0.0.
+      # Version comes from package.json's "packageManager" field; do NOT
+      # also pass `with: version:` here or pnpm/action-setup refuses both.
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda  # v3.0.0
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
