@@ -90,6 +90,10 @@ const API_KEY = process.env.SOCIALDATA_API_KEY?.trim() ?? "";
 const HANDLE = (process.env.X_LOGIN?.trim() || "anishthite").replace(/^@/, "");
 const TZ = process.env.NERV_TZ?.trim() || "America/Los_Angeles";
 const BACKFILL_SINCE = (process.env.BACKFILL_SINCE?.trim() || "2024-01-01");
+// LATEST_ONLY: fetch only the most recent tweet and stamp its day as count>=1.
+// Cost per run: ~1 API call (~$0.0002). Heatmap fills out one day at a time,
+// binary signal ("tweeted that day?"). Merge is additive — never decrements.
+const LATEST_ONLY = process.env.LATEST_ONLY === "1";
 
 if (!API_KEY) {
   die(2, "SOCIALDATA_API_KEY is required");
@@ -317,7 +321,10 @@ async function fetchTweetDayCounts(since: string): Promise<Map<string, number>> 
       );
     }
 
-    const tweets = Array.isArray(body.tweets) ? body.tweets : [];
+    let tweets = Array.isArray(body.tweets) ? body.tweets : [];
+    // LATEST_ONLY: keep only the most recent tweet (Latest sort puts it first)
+    // and force the loop to terminate after this page.
+    if (LATEST_ONLY) tweets = tweets.slice(0, 1);
     let newOnPage = 0;
     for (const tw of tweets) {
       const id = tw.id_str ?? "";
@@ -350,6 +357,11 @@ async function fetchTweetDayCounts(since: string): Promise<Map<string, number>> 
       stoppedAtEnd = true;
       break;
     }
+    if (LATEST_ONLY) {
+      log(`  LATEST_ONLY=1, stopping after first tweet`);
+      stoppedAtEnd = true;
+      break;
+    }
     cursor = nextCursor;
   }
 
@@ -370,30 +382,42 @@ function mergeCounts(
   existing: Day[],
   fresh: Map<string, number>,
   since: string,
-  fullBackfill: boolean
+  fullBackfill: boolean,
+  latestOnly: boolean
 ): Day[] {
   const merged = new Map<string, number>();
   for (const d of existing) merged.set(d.date, d.count);
 
-  if (fullBackfill) {
-    // Wipe and replace: existing was empty or we're seeding from scratch.
-    merged.clear();
-  } else {
-    // Overlap window: REPLACE existing counts for dates >= since.
-    // Outside the overlap: untouched (never decremented).
-    for (const date of [...merged.keys()]) {
-      if (date >= since) merged.delete(date);
+  if (latestOnly) {
+    // Additive-only: stamp each fresh date as max(existing, fresh). Never
+    // decrements, never erases historical data. Idempotent across reruns of
+    // the same tweet (re-fetching today's latest tweet leaves today at 1).
+    // This is the mode the daily workflow runs in.
+    for (const [date, count] of fresh) {
+      const prev = merged.get(date) ?? 0;
+      merged.set(date, Math.max(prev, count));
     }
-  }
+  } else {
+    if (fullBackfill) {
+      // Wipe and replace: existing was empty or we're seeding from scratch.
+      merged.clear();
+    } else {
+      // Overlap window: REPLACE existing counts for dates >= since.
+      // Outside the overlap: untouched (never decremented).
+      for (const date of [...merged.keys()]) {
+        if (date >= since) merged.delete(date);
+      }
+    }
 
-  for (const [date, count] of fresh) {
-    // F1: only write inside the overlap window. Tweets in the late-evening
-    // PT slice of the day BEFORE `since` get UTC-bucketed into the `since:`
-    // query window but re-bucketed back to a pre-since PT date — those are
-    // partial-day counts that must NOT clobber the prior full-day total.
-    // Days strictly older than `since` are never touched by the merge.
-    if (fullBackfill || date >= since) {
-      merged.set(date, count);
+    for (const [date, count] of fresh) {
+      // F1: only write inside the overlap window. Tweets in the late-evening
+      // PT slice of the day BEFORE `since` get UTC-bucketed into the `since:`
+      // query window but re-bucketed back to a pre-since PT date — those are
+      // partial-day counts that must NOT clobber the prior full-day total.
+      // Days strictly older than `since` are never touched by the merge.
+      if (fullBackfill || date >= since) {
+        merged.set(date, count);
+      }
     }
   }
 
@@ -425,7 +449,7 @@ async function main(): Promise<void> {
     die(1, `search pagination failed: ${err instanceof Error ? err.message : err}`);
   }
 
-  const mergedDays = mergeCounts(existing.days, counts, since, fullBackfill);
+  const mergedDays = mergeCounts(existing.days, counts, since, fullBackfill, LATEST_ONLY);
 
   // F2 layer 3: never let an incremental run shrink the historical record.
   // The overlap-merge can legitimately rewrite the last few days but cannot

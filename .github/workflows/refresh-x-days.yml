@@ -48,6 +48,11 @@ jobs:
         env:
           SOCIALDATA_API_KEY: ${{ secrets.SOCIALDATA_API_KEY }}
           X_LOGIN: anishthite
+          # Fetch only the most recent tweet each run (~1 API call, ~$0.0002).
+          # Merge is additive: stamp that tweet's day as count>=1, never
+          # decrement historical days. Heatmap fills out one day at a time
+          # as a binary "did you ship that day?" signal.
+          LATEST_ONLY: "1"
         run: pnpm tsx scripts/refresh-x-days.ts
 
       - name: commit if changed
