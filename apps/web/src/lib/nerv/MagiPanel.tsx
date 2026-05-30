@@ -6,9 +6,12 @@ import { Heatmap } from "./Heatmap";
  *
  * Mobile: stats stack vertically (column) above the heatmap.
  * Desktop (sm:+): the three stats sit on one horizontal row —
- * `streak | today | longest` — with the heatmap below. The wider
- * page container (max-w-6xl) gives us the room to spread out, so the
- * panel is no longer cramped against a narrow heatmap rail.
+ * `streak | today | longest` — sharing a single text baseline so the
+ * numbers visually align. All three numbers use the same size on
+ * desktop (text-5xl) so the row reads as one clean horizontal line
+ * instead of a stair-step (the previous text-5xl/4xl/4xl split made
+ * `streak` sit higher than the other two). The wider page container
+ * (max-w-6xl) gives us the room to spread out.
  *
  * `unit` is the noun used after `today_count` ("commits" / "tweets" /
  * etc.) so the panel can speak the channel's language without the page
@@ -43,7 +46,7 @@ export function MagiPanel({
       </header>
 
       <div className="flex flex-col gap-5 sm:gap-6">
-        <dl className="flex flex-col gap-4 sm:flex-row sm:items-end sm:gap-10">
+        <dl className="flex flex-col gap-4 sm:flex-row sm:items-baseline sm:gap-10">
           <div className="min-w-0">
             <dd className="text-nerv-orange text-4xl sm:text-5xl leading-none tabular-nums">
               {data.streak_current}
@@ -56,7 +59,7 @@ export function MagiPanel({
           <div className="min-w-0">
             <dd
               className={
-                "text-3xl sm:text-4xl leading-none tabular-nums " +
+                "text-4xl sm:text-5xl leading-none tabular-nums " +
                 (live ? "text-nerv-amber" : "text-nerv-text/50")
               }
             >
@@ -69,7 +72,7 @@ export function MagiPanel({
           </div>
 
           <div className="min-w-0">
-            <dd className="text-3xl sm:text-4xl leading-none tabular-nums text-nerv-text/80">
+            <dd className="text-4xl sm:text-5xl leading-none tabular-nums text-nerv-text/80">
               {data.streak_longest}{" "}
               <span className="text-sm normal-case align-baseline">days</span>
             </dd>
