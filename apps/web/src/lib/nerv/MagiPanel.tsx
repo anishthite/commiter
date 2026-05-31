@@ -21,62 +21,59 @@ export function MagiPanel({
 
   return (
     <section className="bg-transparent p-2 sm:p-3 min-w-0">
-      <header className="flex items-center justify-between mb-3 gap-3">
+      <header className="mb-3">
         <div className="text-nerv-orange text-xs tracking-widest uppercase">
           {label}
         </div>
-        <div
-          aria-hidden
-          className={
-            "w-2 h-2 rounded-full " +
-            (live ? "bg-nerv-amber" : "bg-nerv-text/40")
-          }
-          title={live ? `shipped today` : `no activity today`}
-        />
       </header>
 
       <div className="flex flex-col gap-4">
-        <dl className="flex flex-row items-baseline gap-4 sm:gap-8 flex-wrap">
-          <div className="min-w-0">
+        {/* All three stat blocks share one baseline; each block keeps its
+            big number, its unit, and its small caption on a single row.
+            `nowrap` on the inner row prevents the unit from wrapping under
+            the number on narrow viewports. */}
+        <dl className="flex flex-row items-baseline gap-4 sm:gap-6 flex-wrap">
+          <div className="min-w-0 flex items-baseline gap-2 flex-nowrap whitespace-nowrap">
             <dd className="text-nerv-orange text-3xl sm:text-5xl leading-none tabular-nums">
               {data.streak_current}
             </dd>
-            <dt className="mt-1 text-[10px] uppercase tracking-widest text-nerv-text/70">
+            <dt className="text-[10px] uppercase tracking-widest text-nerv-text/70">
               day streak
             </dt>
           </div>
 
-          <div className="min-w-0">
+          <div className="min-w-0 flex items-baseline gap-2 flex-nowrap whitespace-nowrap">
             <dd
               className={
                 "text-3xl sm:text-5xl leading-none tabular-nums " +
                 (live ? "text-nerv-amber" : "text-nerv-text/80")
               }
             >
-              {today}{" "}
-              <span className="text-xs sm:text-sm normal-case align-baseline">{unit}</span>
+              {today}
             </dd>
-            <dt className="mt-1 text-[10px] uppercase tracking-widest text-nerv-text/70">
+            <span className="text-xs sm:text-sm normal-case text-nerv-text/80">{unit}</span>
+            <dt className="text-[10px] uppercase tracking-widest text-nerv-text/70">
               today
             </dt>
           </div>
 
-          <div className="min-w-0">
+          <div className="min-w-0 flex items-baseline gap-2 flex-nowrap whitespace-nowrap">
             <dd className="text-3xl sm:text-5xl leading-none tabular-nums text-nerv-text">
-              {data.streak_longest}{" "}
-              <span className="text-xs sm:text-sm normal-case align-baseline">days</span>
+              {data.streak_longest}
             </dd>
-            <dt className="mt-1 text-[10px] uppercase tracking-widest text-nerv-text/70">
+            <span className="text-xs sm:text-sm normal-case text-nerv-text/80">days</span>
+            <dt className="text-[10px] uppercase tracking-widest text-nerv-text/70">
               longest
             </dt>
           </div>
         </dl>
 
-        {/* No overflow wrapper here — that's what introduced the second
-            scrollbar inside the panel. The heatmap is narrow enough to
-            sit in the column on mobile; if it ever overflows it can
-            spill into the page's natural scroll instead. */}
-        <Heatmap days={data.days} />
+        {/* Center the contribution heatmap horizontally within the panel
+            column. The heatmap itself is inline-flex so it intrinsically
+            sizes to its content; flex justify-center handles the centering. */}
+        <div className="flex justify-center w-full">
+          <Heatmap days={data.days} />
+        </div>
       </div>
     </section>
   );
