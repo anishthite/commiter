@@ -15,7 +15,7 @@ const config: Config = {
           amber: "#ffaa33",
           warn: "#ff0033",
           grid: "#2a1500",
-          text: "#ffd9a8",
+          text: "#ffe8c8",
           dim: "#1a0a00",
         },
       },

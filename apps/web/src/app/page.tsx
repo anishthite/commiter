@@ -18,23 +18,24 @@ export default async function Page() {
     error = e instanceof Error ? e.message : String(e);
   }
 
-  // "did we ship today?" semantics:
-  //   • Both channels live  → YES iff BOTH shipped (preserves AND streak)
-  //   • Twitter offline    → YES iff GitHub shipped (don't punish the
-  //                            user for a missing data source they didn't
-  //                            choose to wire up)
   const ghToday = snapshot?.channels.github.today_count ?? 0;
   const xToday = snapshot?.channels.twitter.today_count ?? 0;
   const xOffline = snapshot?.channels.twitter.offline === true;
   const shipped = xOffline ? ghToday > 0 : ghToday > 0 && xToday > 0;
 
+  // Combined streak with a "what if you ship today" projection.
+  // today_pending streaks already include today when shipped, so the
+  // projection only adds when today hasn't shipped yet.
+  const combinedCurrent = snapshot?.combined.streak_current ?? 0;
+  const combinedProjected = shipped ? combinedCurrent : combinedCurrent + 1;
+
   return (
     <main className="min-h-screen px-4 py-8 sm:px-6 sm:py-12 max-w-6xl mx-auto">
       {error ? (
-        <div className="border border-nerv-warn text-nerv-warn p-4 mb-6 text-sm">
+        <div className="text-nerv-warn p-4 mb-6 text-sm">
           <div className="uppercase tracking-widest mb-2">SYS:FAULT</div>
           <code className="font-mono text-xs whitespace-pre-wrap">{error}</code>
-          <div className="mt-3 text-xs text-nerv-text/60">
+          <div className="mt-3 text-xs text-nerv-text/80">
             Check <code className="text-nerv-amber">GITHUB_TOKEN</code>,{" "}
             <code className="text-nerv-amber">GITHUB_LOGIN</code>, and{" "}
             <code className="text-nerv-amber">X_LOGIN</code> in{" "}
@@ -44,49 +45,69 @@ export default async function Page() {
       ) : (
         snapshot && (
           <>
-            <header className="mb-8 sm:mb-10">
-              <h1 className="text-nerv-text/60 text-base sm:text-lg lowercase">
-                did we ship today?
+            <header className="mb-6 sm:mb-8">
+              <h1 className="text-nerv-amber text-2xl sm:text-3xl lowercase font-mono tracking-tight">
+                did anish ship today?
               </h1>
-              <div
+              <h2
                 className={
-                  "mt-2 text-6xl sm:text-7xl font-mono leading-none tabular-nums " +
+                  "mt-1 text-6xl sm:text-7xl font-mono leading-none tabular-nums " +
                   (shipped ? "text-nerv-amber" : "text-nerv-orange")
                 }
               >
                 {shipped ? "yes." : "no."}
-              </div>
-              {oneliner && (
-                <p className="mt-3 text-sm sm:text-base text-nerv-text/70 lowercase font-mono">
-                  <span className="text-nerv-orange/60 mr-2">&gt;</span>
-                  {oneliner}
-                </p>
-              )}
-              <div className="mt-3 text-[11px] sm:text-xs uppercase tracking-widest text-nerv-text/50 flex gap-4 flex-wrap">
-                <span>
+              </h2>
+
+              {/* Everything-on-one-line status row: combined streak +
+                  projection, github today, x today, oneliner. Wraps on
+                  narrow screens but stays horizontal whenever possible. */}
+              <div className="mt-4 flex flex-wrap items-baseline gap-x-6 gap-y-2 text-sm sm:text-base font-mono lowercase">
+                <span className="text-nerv-text/90">
+                  <span className="text-nerv-amber text-xl sm:text-2xl tabular-nums">
+                    {combinedCurrent}
+                  </span>
+                  <span className="text-nerv-text/70"> day streak</span>
+                  {!shipped && (
+                    <span className="text-nerv-text/70">
+                      {" "}
+                      <span className="text-nerv-text/50">→</span>{" "}
+                      <span className="text-nerv-amber/90 tabular-nums">
+                        {combinedProjected}
+                      </span>{" "}
+                      if you ship today
+                    </span>
+                  )}
+                </span>
+
+                <span className="text-nerv-text/90">
                   github{" "}
                   <span
                     className={
-                      ghToday > 0 ? "text-nerv-amber" : "text-nerv-text/40"
+                      ghToday > 0 ? "text-nerv-amber" : "text-nerv-text/70"
                     }
                   >
-                    {ghToday > 0 ? `+${ghToday} commits` : "idle"}
+                    {ghToday > 0 ? `+${ghToday} commits` : "nothing yet"}
                   </span>
                 </span>
+
                 {!xOffline && (
-                  <>
-                    <span aria-hidden>·</span>
-                    <span>
-                      x{" "}
-                      <span
-                        className={
-                          xToday > 0 ? "text-nerv-amber" : "text-nerv-text/40"
-                        }
-                      >
-                        {xToday > 0 ? `+${xToday} tweets` : "idle"}
-                      </span>
+                  <span className="text-nerv-text/90">
+                    x{" "}
+                    <span
+                      className={
+                        xToday > 0 ? "text-nerv-amber" : "text-nerv-text/70"
+                      }
+                    >
+                      {xToday > 0 ? `+${xToday} tweets` : "nothing yet"}
                     </span>
-                  </>
+                  </span>
+                )}
+
+                {oneliner && (
+                  <span className="text-nerv-text/90 basis-full sm:basis-auto sm:flex-1 sm:min-w-0">
+                    <span className="text-nerv-orange/80 mr-2">&gt;</span>
+                    {oneliner}
+                  </span>
                 )}
               </div>
             </header>
@@ -95,7 +116,7 @@ export default async function Page() {
               className={
                 xOffline
                   ? "grid gap-4"
-                  : "grid gap-4 sm:grid-cols-2"
+                  : "grid gap-4 grid-cols-2"
               }
             >
               <MagiPanel
@@ -113,15 +134,15 @@ export default async function Page() {
             </div>
 
             {xOffline && (
-              <p className="mt-3 text-[10px] uppercase tracking-widest text-nerv-text/30">
-                x panel hidden — set <code className="text-nerv-text/50">X_LOGIN</code> and run the{" "}
-                <code className="text-nerv-text/50">refresh-x-days</code> action (needs{" "}
-                <code className="text-nerv-text/50">SOCIALDATA_API_KEY</code> in GH Secrets); data file is bundled at{" "}
-                <code className="text-nerv-text/50">apps/web/src/data/x-days.json</code>
+              <p className="mt-3 text-[10px] uppercase tracking-widest text-nerv-text/60">
+                x panel hidden — set <code className="text-nerv-text/80">X_LOGIN</code> and run the{" "}
+                <code className="text-nerv-text/80">refresh-x-days</code> action (needs{" "}
+                <code className="text-nerv-text/80">SOCIALDATA_API_KEY</code> in GH Secrets); data file is bundled at{" "}
+                <code className="text-nerv-text/80">apps/web/src/data/x-days.json</code>
               </p>
             )}
 
-            <footer className="mt-8 text-[10px] uppercase tracking-widest text-nerv-text/30">
+            <footer className="mt-8 text-[10px] uppercase tracking-widest text-nerv-text/60">
               {snapshot.generated_at.slice(0, 10)} ·{" "}
               {snapshot.generated_at.slice(11, 16)}Z
             </footer>

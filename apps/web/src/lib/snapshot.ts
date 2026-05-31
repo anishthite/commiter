@@ -71,8 +71,11 @@ export async function getSnapshot(daysRequested = 365): Promise<Snapshot> {
   ]);
 
   const todayIndex = ghDays.length - 1;
-  const ghStreak = computeStreak(ghDays, { today_index: todayIndex });
-  const twStreak = computeStreak(twResult.days, { today_index: todayIndex });
+  // today_pending: true → if today hasn't shipped yet, treat it as
+  // pending (don't break the streak until the day is actually over).
+  // The streak stays alive through the whole calendar day.
+  const ghStreak = computeStreak(ghDays, { today_index: todayIndex, today_pending: true });
+  const twStreak = computeStreak(twResult.days, { today_index: todayIndex, today_pending: true });
 
   // When the Twitter source is offline (no scraper wired up, fallbacks
   // all failed), the AND-streak across both channels would collapse to
@@ -81,7 +84,7 @@ export async function getSnapshot(daysRequested = 365): Promise<Snapshot> {
   const combinedDays = twResult.offline
     ? ghDays
     : combineDays(ghDays, twResult.days, "and");
-  const combinedStreak = computeStreak(combinedDays, { today_index: todayIndex });
+  const combinedStreak = computeStreak(combinedDays, { today_index: todayIndex, today_pending: true });
 
   return {
     generated_at: now.toISOString(),

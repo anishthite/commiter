@@ -4,6 +4,13 @@
 
 html,
 body {
-  background: #000;
-  color: #ffd9a8;
+  background: #0a0500;
+  color: #ffe8c8;
+}
+
+/* Page-level horizontal scroll guard: the dashboard intentionally
+   keeps content on one horizontal line where possible, so suppress
+   any stray inner scrollbar a child element might add. */
+body {
+  overflow-x: hidden;
 }

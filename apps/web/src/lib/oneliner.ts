@@ -81,7 +81,7 @@ state:
 - combined streak (days with both): ${ctx.streak}
 - longest ever: ${ctx.longest}
 
-write ONE LINE, 8-16 words MAX, lowercase, no emojis, no exclamation marks. blunt, observational, time-aware. helps them ship today. ends in a period. nothing else, no quotes, just the line.`;
+write ONE LINE, 8-16 words MAX, lowercase, no emojis, no exclamation marks. blunt, observational, time-aware. focus on the COMBINED STREAK — reference the number, what's at stake if today gets dropped, or the new high if today lands. ends in a period. nothing else, no quotes, just the line.`;
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",

@@ -59,7 +59,7 @@ export function Heatmap({ days }: { days: Day[] }) {
 
   return (
     <div
-      className="inline-flex flex-col font-mono text-[9px] text-nerv-text/40"
+      className="inline-flex flex-col font-mono text-[9px] text-nerv-text/70"
       role="grid"
       aria-label="contribution heatmap (newest first)"
     >
@@ -89,7 +89,7 @@ export function Heatmap({ days }: { days: Day[] }) {
             role="row"
           >
             <div
-              className="text-right uppercase tracking-widest text-nerv-orange/50 pr-1.5"
+              className="text-right uppercase tracking-widest text-nerv-orange/80 pr-1.5"
               style={{ width: LABEL_COL_PX }}
             >
               {ticks[wi] ?? ""}
