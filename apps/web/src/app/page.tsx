@@ -23,11 +23,7 @@ export default async function Page() {
   const xOffline = snapshot?.channels.twitter.offline === true;
   const shipped = xOffline ? ghToday > 0 : ghToday > 0 && xToday > 0;
 
-  // Combined streak with a "what if you ship today" projection.
-  // today_pending streaks already include today when shipped, so the
-  // projection only adds when today hasn't shipped yet.
   const combinedCurrent = snapshot?.combined.streak_current ?? 0;
-  const combinedProjected = shipped ? combinedCurrent : combinedCurrent + 1;
 
   return (
     <main className="min-h-screen px-4 py-8 sm:px-6 sm:py-12 max-w-6xl mx-auto">
@@ -58,50 +54,16 @@ export default async function Page() {
                 {shipped ? "yes." : "no."}
               </h2>
 
-              {/* Everything-on-one-line status row: combined streak +
-                  projection, github today, x today, oneliner. Wraps on
-                  narrow screens but stays horizontal whenever possible. */}
+              {/* Single-line status: combined streak + LLM oneliner.
+                  The per-channel today counts already live inside the
+                  GitHub/X panels below, so we don't repeat them here. */}
               <div className="mt-4 flex flex-wrap items-baseline gap-x-6 gap-y-2 text-sm sm:text-base font-mono lowercase">
                 <span className="text-nerv-text/90">
                   <span className="text-nerv-amber text-xl sm:text-2xl tabular-nums">
                     {combinedCurrent}
                   </span>
                   <span className="text-nerv-text/70"> day streak</span>
-                  {!shipped && (
-                    <span className="text-nerv-text/70">
-                      {" "}
-                      <span className="text-nerv-text/50">→</span>{" "}
-                      <span className="text-nerv-amber/90 tabular-nums">
-                        {combinedProjected}
-                      </span>{" "}
-                      if you ship today
-                    </span>
-                  )}
                 </span>
-
-                <span className="text-nerv-text/90">
-                  github{" "}
-                  <span
-                    className={
-                      ghToday > 0 ? "text-nerv-amber" : "text-nerv-text/70"
-                    }
-                  >
-                    {ghToday > 0 ? `+${ghToday} commits` : "nothing yet"}
-                  </span>
-                </span>
-
-                {!xOffline && (
-                  <span className="text-nerv-text/90">
-                    x{" "}
-                    <span
-                      className={
-                        xToday > 0 ? "text-nerv-amber" : "text-nerv-text/70"
-                      }
-                    >
-                      {xToday > 0 ? `+${xToday} tweets` : "nothing yet"}
-                    </span>
-                  </span>
-                )}
 
                 {oneliner && (
                   <span className="text-nerv-text/90 basis-full sm:basis-auto sm:flex-1 sm:min-w-0">
