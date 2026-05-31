@@ -56,18 +56,60 @@ jobs:
         run: pnpm tsx scripts/refresh-x-days.ts
 
       - name: commit if changed
+        id: commit
         run: |
-          git diff --quiet apps/web/src/data/x-days.json || (
-            git config user.name "x-refresh-bot" &&
-            git config user.email "noreply@github.com" &&
-            git add apps/web/src/data/x-days.json &&
-            # F7: rebase any in-flight changes on the branch before commit/push
-            # to avoid losing a queued-schedule run's work to a non-fast-forward
-            # rejection after a finishing workflow_dispatch. The data file is
-            # regenerated from scratch each run with overlap-merge logic, so
-            # replaying our result on top of a newer base yields the same
-            # authoritative state.
-            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" &&
-            git commit -m "data: refresh x-days $(date -u +%Y-%m-%d)" &&
-            git push
-          )
+          if git diff --quiet apps/web/src/data/x-days.json; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # F8b: author the bot commit as the repo owner's GitHub noreply
+          # address (not the generic noreply@github.com). The generic address
+          # maps to GitHub's catch-all `web-flow` user, which has no Vercel
+          # account linked → Vercel rejects the push-triggered deploy with
+          # "Git author web-flow must have access to the project on Vercel".
+          # The numeric-prefixed form `<id>+<login>@users.noreply.github.com`
+          # resolves to the actual user on GitHub, which IS linked to Vercel,
+          # so the push-triggered deploy is accepted.
+          # The deploy-hook step below remains as belt-and-braces in case
+          # Vercel's git integration is ever disconnected.
+          git config user.name "x-refresh-bot"
+          git config user.email "14373068+anishthite@users.noreply.github.com"
+          git add apps/web/src/data/x-days.json
+          # F7: rebase any in-flight changes on the branch before commit/push
+          # to avoid losing a queued-schedule run's work to a non-fast-forward
+          # rejection after a finishing workflow_dispatch. The data file is
+          # regenerated from scratch each run with overlap-merge logic, so
+          # replaying our result on top of a newer base yields the same
+          # authoritative state.
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git commit -m "data: refresh x-days $(date -u +%Y-%m-%d)"
+          git push
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+
+      # F8: trigger Vercel via Deploy Hook instead of relying on Vercel's
+      # git-push auto-deploy. The bot's commit author ("x-refresh-bot" /
+      # noreply@github.com) maps to GitHub's catch-all `web-flow` user, which
+      # has no Vercel account linked, so Vercel's "deploy only commits from
+      # authors with project access" check refuses the push-triggered build.
+      # Deploy hooks bypass author attribution entirely — the hook URL itself
+      # is the auth. Create one at:
+      #   Vercel → Project → Settings → Git → Deploy Hooks → Create hook
+      #   (branch: main, name: refresh-x-days-bot)
+      # then store the URL as the `VERCEL_DEPLOY_HOOK_URL` repo secret.
+      - name: trigger vercel deploy
+        if: steps.commit.outputs.committed == 'true'
+        env:
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$VERCEL_DEPLOY_HOOK_URL" ]; then
+            echo "VERCEL_DEPLOY_HOOK_URL secret not set; skipping deploy trigger."
+            echo "Set it in repo Settings → Secrets and variables → Actions."
+            exit 0
+          fi
+          # Hook URL is project- and branch-scoped; no body needed. Use -f so
+          # a non-2xx response fails the job (loud signal that the hook was
+          # deleted/rotated). -sS keeps output quiet on success but shows
+          # errors. We discard the JSON ack body and just print the status.
+          curl -fsS -X POST "$VERCEL_DEPLOY_HOOK_URL" \
+            -o /dev/null \
+            -w "vercel deploy hook: HTTP %{http_code}\n"

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>2026-05-29 — Vercel deploy hook for refresh-x-days bot</title>
+<style>
+  body { font: 13px/1.45 ui-monospace, monospace; max-width: 980px; margin: 2rem auto; padding: 0 1rem; }
+  h1, h2 { font-family: ui-sans-serif, system-ui; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; }
+  th, td { border: 1px solid #ccc; padding: 4px 8px; vertical-align: top; }
+  th { background: #f4f4f4; text-align: left; }
+  code { background: #f4f4f4; padding: 1px 4px; }
+  .id { white-space: nowrap; font-weight: bold; }
+  pre { background: #f4f4f4; padding: 8px; overflow-x: auto; }
+</style></head>
+<body>
+<h1>2026-05-29 — Vercel deploy hook for <code>refresh-x-days</code> bot</h1>
+
+<p><strong>Scope.</strong> Vercel's git-push auto-deploy was refusing builds triggered by the
+<code>refresh-x-days</code> GitHub Action. The action's daily commit was being attributed to
+GitHub's catch-all <code>web-flow</code> user (because <code>user.email</code> was the unspecific
+<code>noreply@github.com</code>), and that identity has no Vercel account linked. Vercel's project
+setting "deploy only commits from authors with access to this project" then blocked the build.
+Result: <code>apps/web/src/data/x-days.json</code> updated on <code>main</code> daily but the
+deployed site never picked up the new data.</p>
+
+<h2>Decisions</h2>
+<table>
+  <tr><th>ID</th><th>What</th><th>Why</th></tr>
+  <tr><td class="id">D-001</td><td>Trigger Vercel via Deploy Hook instead of fixing the commit-author attribution.</td><td>User picked option 3 from a 4-option clarify. Author-attribution fixes (use real noreply email, or onboard <code>github-actions[bot]</code> as a project member) are smaller diffs but tie the deploy path to identity plumbing that drifts. A deploy hook is one POST; its auth is the URL itself; it bypasses the author check by design. The hook URL is project- and branch-scoped, so even if leaked it can only trigger a redeploy of the current <code>main</code>, never inject code.</td></tr>
+  <tr><td class="id">D-002</td><td>Gate the curl on <code>steps.commit.outputs.committed == 'true'</code> so no-op runs don't burn a Vercel build.</td><td>Most days the latest tweet already exists in the JSON and <code>git diff --quiet</code> exits 0 — no commit, no push, nothing for Vercel to deploy. Free-tier Vercel build minutes are finite and a daily no-op deploy would consume them for nothing.</td></tr>
+  <tr><td class="id">D-003</td><td>Treat a missing <code>VERCEL_DEPLOY_HOOK_URL</code> secret as a soft skip (warn + exit 0), not a hard fail.</td><td>Workflow must keep working on forks and on first-deploy where the secret hasn't been provisioned yet. The commit still happens; only the deploy trigger is skipped. Loud log line tells the operator what to do.</td></tr>
+  <tr><td class="id">D-004</td><td>Use <code>curl -fsS</code> (fail on non-2xx) for the POST itself.</td><td>If the hook is rotated or deleted, Vercel returns 404. We want that to fail the job so the operator notices on the next dashboard glance, not silently swallow the failure.</td></tr>
+  <tr><td class="id">D-005</td><td>Leave <code>user.email = noreply@github.com</code> as-is.</td><td>With deploy hooks, the commit author no longer gates the deploy. Changing the email would also re-attribute the historical commit log; not worth the churn when the new path already works.</td></tr>
+  <tr><td class="id">D-005a</td><td><strong>2026-05-31 revision:</strong> reversed D-005. Switched <code>user.email</code> to <code>14373068+anishthite@users.noreply.github.com</code> (the repo owner's GitHub noreply, numeric-id-prefixed form).</td><td>D-005 misread the failure mode. Vercel's git integration still attempts an auto-deploy on EVERY push to the production branch, in parallel with the deploy hook — the hook does not suppress it. For bot commits authored as <code>noreply@github.com</code>, the parallel auto-deploy is refused with "Git author web-flow must have access to the project on Vercel," generating a recurring failure notification per refresh. The hook deploy succeeded silently underneath, so the site updated correctly, but the user kept getting the noise. The numeric-id-prefixed noreply maps to the actual GitHub user (which has Vercel access), so the auto-deploy is accepted and no error fires. The hook step stays as belt-and-braces.</td></tr>
+</table>
+
+<h2>Tradeoffs</h2>
+<table>
+  <tr><th>ID</th><th>Tradeoff</th></tr>
+  <tr><td class="id">T-001</td><td>Two deploy paths now exist for <code>main</code>: Vercel's git auto-deploy (which is refused for bot commits but still fires for the operator's own commits) and the hook. For human commits, the auto-deploy wins and the hook never runs (bot only). For bot commits, the auto-deploy attempt is refused (no-op) and the hook drives the build. No double-deploy; no race. If Vercel's auto-deploy is later disabled at the project level for cleanliness, human commits will need their own trigger — flagged as L-001.</td></tr>
+  <tr><td class="id">T-002</td><td>Hook URL is a long-lived bearer-style secret. Leaking it = attacker can spam redeploys of current <code>main</code>. Cost: build minutes. Mitigation: standard GitHub Actions secret handling; if it leaks, regenerate in Vercel UI and rotate the secret. No data exfil path through this primitive.</td></tr>
+</table>
+
+<h2>Open questions / followups</h2>
+<table>
+  <tr><th>ID</th><th>Item</th></tr>
+  <tr><td class="id">L-001</td><td>Optional: disable Vercel's git-push auto-deploy entirely (Project → Settings → Git → Ignored Build Step or Production Branch toggle), and trigger all deploys via hooks. Cleaner separation, but every human commit then needs an action/manual deploy. Not doing this now — current hybrid works.</td></tr>
+  <tr><td class="id">L-002</td><td>If Vercel ever exposes a <code>commit-sha</code> parameter on deploy hooks, pass the freshly-pushed SHA to guarantee the hook builds the bot's commit and not a later one that landed mid-flight. Today the hook just builds tip-of-branch; the rebase-before-push step (F7) keeps this race window small.</td></tr>
+  <tr><td class="id">L-003</td><td>With D-005a in place, the F8 deploy-hook step is now redundant for the happy path — Vercel's git auto-deploy handles bot commits correctly. Kept as defense-in-depth: if the Vercel git integration is ever disconnected (or the project is moved to a Vercel team without git linkage), the hook still drives deploys. Worth re-evaluating after a month of clean runs: drop F8 and the <code>VERCEL_DEPLOY_HOOK_URL</code> secret if the auto-deploy path proves stable.</td></tr>
+</table>
+
+<h2>Rollout checklist</h2>
+<ol>
+  <li>In Vercel: Project → Settings → Git → <strong>Deploy Hooks</strong> → Create Hook. Name: <code>refresh-x-days-bot</code>. Branch: <code>main</code>. Copy URL.</li>
+  <li>In GitHub: repo → Settings → Secrets and variables → Actions → New repository secret. Name: <code>VERCEL_DEPLOY_HOOK_URL</code>. Value: paste URL.</li>
+  <li>Run <code>refresh-x-days</code> via <code>workflow_dispatch</code>. If the JSON has no diff that minute, force a diff first (e.g., bump the file by hand and revert in a single commit) — or just wait for the next scheduled run.</li>
+  <li>Confirm in Vercel dashboard: a new deployment kicked off, labeled "Deploy Hook" as the trigger source.</li>
+  <li>Verify <code>https://&lt;site&gt;/</code> reflects the updated <code>x-days.json</code>.</li>
+</ol>
+
+<h2>Files touched</h2>
+<table>
+  <tr><th>Path</th><th>Change</th></tr>
+  <tr><td><code>.github/workflows/refresh-x-days.yml</code></td><td>Added <code>id: commit</code> + <code>committed</code> output to the commit step. Added new <code>trigger vercel deploy</code> step that POSTs to <code>$VERCEL_DEPLOY_HOOK_URL</code> when a commit happened. Replaced the <code>|| (...)</code> compound with explicit early-exit (no behavior change to the commit logic itself).</td></tr>
+</table>
+
+</body>
+</html>
