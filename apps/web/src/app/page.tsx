@@ -35,7 +35,6 @@ async function loadAll(): Promise<UserCardData[]> {
 
 export default async function SummaryPage() {
   const cards = await loadAll();
-  const anyShipped = cards.some((c) => isShipped(c.snapshot));
   const generated = cards.find((c) => c.snapshot)?.snapshot?.generated_at ?? "";
 
   return (
@@ -44,9 +43,6 @@ export default async function SummaryPage() {
         <h1 className="text-nerv-amber text-xl sm:text-3xl lowercase font-mono tracking-tight">
           did we ship today?
         </h1>
-        <p className="mt-1 text-[10px] sm:text-xs uppercase tracking-widest text-nerv-text/60">
-          {anyShipped ? "at least one of us did." : "the day is still young."}
-        </p>
       </header>
 
       <div className="grid gap-3 sm:gap-4 sm:grid-cols-2">

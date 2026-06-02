@@ -144,14 +144,13 @@ function rulesLine(ctx: Ctx): string {
     return "you talked about it. now build it. one commit.";
   }
 
-  // both at zero
+  // both at zero. We used to nag with a different line per hour bucket;
+  // dropped that ladder — the giant "no." headline already makes the
+  // point. Only the late-evening streak-at-risk warning survives because
+  // it carries actual information (the streak number) rather than just
+  // editorializing about the clock.
   if (streak >= 14 && hourPT >= 18) {
     return `${streak}-day streak about to die. don't let it.`;
   }
-  if (hourPT < 10) return "morning. blank page. type something.";
-  if (hourPT < 14) return "still morning, technically. nothing on the board.";
-  if (hourPT < 17) return "afternoon. nothing shipped. clock's ticking.";
-  if (hourPT < 20) return "evening. day is leaving. one push, one tweet.";
-  if (hourPT < 22) return "two hours to midnight. a typo fix counts as a commit.";
-  return "midnight is coming. ship anything.";
+  return "nothing shipped yet.";
 }
