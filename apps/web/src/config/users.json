@@ -1,0 +1,16 @@
+{
+  "users": [
+    {
+      "slug": "anish",
+      "displayName": "anish",
+      "githubLogin": "anishthite",
+      "xLogin": "anishthite"
+    },
+    {
+      "slug": "subby",
+      "displayName": "subby",
+      "githubLogin": "thecooltechguy",
+      "xLogin": "subby_tech"
+    }
+  ]
+}

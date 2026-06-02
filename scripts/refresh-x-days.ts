@@ -31,6 +31,11 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
+// ----- multi-user roster ---------------------------------------------------
+// Source of truth: apps/web/src/config/users.json (D-024). The script reads
+// it directly rather than importing the .ts wrapper so it stays runnable
+// without a TS path-alias resolver in Node.
+
 // ----- types ----------------------------------------------------------------
 
 type Day = { date: string; count: number };
@@ -61,7 +66,55 @@ type SearchResponse = {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const REPO_ROOT = resolve(__dirname, "..");
-const DATA_PATH = resolve(REPO_ROOT, "apps/web/src/data/x-days.json");
+const USERS_PATH = resolve(REPO_ROOT, "apps/web/src/config/users.json");
+const dataPathFor = (slug: string): string =>
+  resolve(REPO_ROOT, `apps/web/src/data/x-days.${slug}.json`);
+
+type RosterUser = {
+  slug: string;
+  displayName: string;
+  githubLogin: string;
+  xLogin: string;
+};
+
+async function loadRoster(): Promise<RosterUser[]> {
+  let raw: string;
+  try {
+    raw = await readFile(USERS_PATH, "utf8");
+  } catch (err) {
+    die(2, `cannot read ${USERS_PATH}: ${err instanceof Error ? err.message : err}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    die(2, `${USERS_PATH} is not valid JSON: ${err instanceof Error ? err.message : err}`);
+  }
+  const users = (parsed as { users?: unknown })?.users;
+  if (!Array.isArray(users) || users.length === 0) {
+    die(2, `${USERS_PATH} must have a non-empty users[] array`);
+  }
+  const out: RosterUser[] = [];
+  for (const u of users) {
+    if (!u || typeof u !== "object") continue;
+    const o = u as Record<string, unknown>;
+    if (
+      typeof o.slug === "string" &&
+      typeof o.displayName === "string" &&
+      typeof o.githubLogin === "string" &&
+      typeof o.xLogin === "string"
+    ) {
+      out.push({
+        slug: o.slug,
+        displayName: o.displayName,
+        githubLogin: o.githubLogin,
+        xLogin: o.xLogin,
+      });
+    }
+  }
+  if (out.length === 0) die(2, `${USERS_PATH}: no valid user entries`);
+  return out;
+}
 
 const API_BASE = "https://api.socialdata.tools";
 const OVERLAP_DAYS = 2;
@@ -87,7 +140,16 @@ function die(code: 1 | 2, msg: string): never {
 // ----- env ------------------------------------------------------------------
 
 const API_KEY = process.env.SOCIALDATA_API_KEY?.trim() ?? "";
-const HANDLE = (process.env.X_LOGIN?.trim() || "anishthite").replace(/^@/, "");
+// X_LOGIN env retained as an override for single-user runs (e.g. local
+// testing of one slug). When set + USERS_FILTER is unset, the multi-user
+// loop is bypassed in favor of the legacy single-user behavior.
+const LEGACY_X_LOGIN = (process.env.X_LOGIN?.trim() || "").replace(/^@/, "");
+// USERS_FILTER="anish,subby" → only refresh those slugs (debugging). Empty
+// = refresh every slug in users.json.
+const USERS_FILTER = (process.env.USERS_FILTER?.trim() || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const TZ = process.env.NERV_TZ?.trim() || "America/Los_Angeles";
 const BACKFILL_SINCE = (process.env.BACKFILL_SINCE?.trim() || "2024-01-01");
 // LATEST_ONLY: fetch only the most recent tweet and stamp its day as count>=1.
@@ -220,26 +282,26 @@ async function apiGet<T>(path: string): Promise<T> {
 
 // ----- I/O ------------------------------------------------------------------
 
-async function loadData(): Promise<DataFile> {
+async function loadData(dataPath: string): Promise<DataFile> {
   let raw: string;
   try {
-    raw = await readFile(DATA_PATH, "utf8");
+    raw = await readFile(dataPath, "utf8");
   } catch (err) {
-    die(2, `cannot read ${DATA_PATH}: ${err instanceof Error ? err.message : err}`);
+    die(2, `cannot read ${dataPath}: ${err instanceof Error ? err.message : err}`);
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    die(2, `${DATA_PATH} is not valid JSON: ${err instanceof Error ? err.message : err}`);
+    die(2, `${dataPath} is not valid JSON: ${err instanceof Error ? err.message : err}`);
   }
   if (!parsed || typeof parsed !== "object") {
-    die(2, `${DATA_PATH} must be a JSON object`);
+    die(2, `${dataPath} must be a JSON object`);
   }
   const obj = parsed as Record<string, unknown>;
   const days = obj.days;
   if (!isValidDayList(days)) {
-    die(2, `${DATA_PATH}: invalid days[] (must be Array<{date:YYYY-MM-DD, count:number}>)`);
+    die(2, `${dataPath}: invalid days[] (must be Array<{date:YYYY-MM-DD, count:number}>)`);
   }
   return {
     generated_at: typeof obj.generated_at === "string" ? obj.generated_at : "1970-01-01T00:00:00.000Z",
@@ -250,29 +312,28 @@ async function loadData(): Promise<DataFile> {
   };
 }
 
-async function saveData(data: DataFile): Promise<void> {
+async function saveData(dataPath: string, data: DataFile): Promise<void> {
   const sorted = [...data.days].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const out: DataFile = { ...data, days: sorted };
   const json = JSON.stringify(out, null, 2) + "\n";
-  // F8: write-temp-then-rename for atomicity. A crash mid-flush leaves the
-  // real file intact; the tmp file is what's truncated.
-  const tmp = DATA_PATH + ".tmp";
+  // F8: write-temp-then-rename for atomicity.
+  const tmp = dataPath + ".tmp";
   await writeFile(tmp, json, "utf8");
-  await rename(tmp, DATA_PATH);
+  await rename(tmp, dataPath);
 }
 
 // ----- main steps -----------------------------------------------------------
 
-async function resolveUserId(existing: DataFile): Promise<string> {
-  if (existing.user_id && existing.handle === HANDLE) {
-    log(`user_id cached: ${existing.user_id} (handle=${HANDLE})`);
+async function resolveUserId(handle: string, existing: DataFile): Promise<string> {
+  if (existing.user_id && existing.handle === handle) {
+    log(`user_id cached: ${existing.user_id} (handle=${handle})`);
     return existing.user_id;
   }
-  log(`looking up user_id for handle=${HANDLE}`);
-  const u = await apiGet<UserLookupResponse>(`/twitter/user/${encodeURIComponent(HANDLE)}`);
+  log(`looking up user_id for handle=${handle}`);
+  const u = await apiGet<UserLookupResponse>(`/twitter/user/${encodeURIComponent(handle)}`);
   const id = u.id_str ?? (u.id != null ? String(u.id) : "");
   if (!id) {
-    throw new Error(`socialdata /twitter/user/${HANDLE} returned no id (body: ${JSON.stringify(u).slice(0, 200)})`);
+    throw new Error(`socialdata /twitter/user/${handle} returned no id (body: ${JSON.stringify(u).slice(0, 200)})`);
   }
   log(`resolved user_id=${id}`);
   return id;
@@ -288,7 +349,7 @@ function decideSince(existing: DataFile): { since: string; fullBackfill: boolean
   return { since, fullBackfill: false };
 }
 
-async function fetchTweetDayCounts(since: string): Promise<Map<string, number>> {
+async function fetchTweetDayCounts(handle: string, since: string): Promise<Map<string, number>> {
   // socialdata's `since:` operator is inclusive on UTC date in the query;
   // we re-bucket each tweet to NERV_TZ regardless. Any rounding noise that
   // lands at/after `since` is absorbed by OVERLAP_DAYS; noise landing
@@ -302,7 +363,7 @@ async function fetchTweetDayCounts(since: string): Promise<Map<string, number>> 
   let stoppedAtEnd = false;
 
   while (pages < MAX_PAGES) {
-    const query = `from:${HANDLE} since:${since}`;
+    const query = `from:${handle} since:${since}`;
     const params = new URLSearchParams({ query, type: "Latest" });
     if (cursor) params.set("cursor", cursor);
     const path = `/twitter/search?${params.toString()}`;
@@ -428,15 +489,22 @@ function mergeCounts(
 
 // ----- run ------------------------------------------------------------------
 
-async function main(): Promise<void> {
-  const existing = await loadData();
-  log(`loaded ${DATA_PATH}: handle=${existing.handle || "(none)"}, days=${existing.days.length}, user_id=${existing.user_id || "(none)"}`);
+async function processUser(target: { slug: string; handle: string }): Promise<void> {
+  const { slug, handle } = target;
+  const dataPath = dataPathFor(slug);
+  log(`=== ${slug} (handle=${handle}) ===`);
 
+  const existing = await loadData(dataPath);
+  log(`loaded ${dataPath}: handle=${existing.handle || "(none)"}, days=${existing.days.length}, user_id=${existing.user_id || "(none)"}`);
+
+  // Per-user failures THROW (not die/exit) so a transient socialdata error
+  // for one user doesn't poison the whole roster's commit step. main()
+  // catches and continues to the next user. Reviewer-flagged 2026-06-01.
   let userId: string;
   try {
-    userId = await resolveUserId(existing);
+    userId = await resolveUserId(handle, existing);
   } catch (err) {
-    die(1, `user lookup failed: ${err instanceof Error ? err.message : err}`);
+    throw new Error(`[${slug}] user lookup failed: ${err instanceof Error ? err.message : err}`);
   }
 
   const { since, fullBackfill } = decideSince(existing);
@@ -444,37 +512,28 @@ async function main(): Promise<void> {
 
   let counts: Map<string, number>;
   try {
-    counts = await fetchTweetDayCounts(since);
+    counts = await fetchTweetDayCounts(handle, since);
   } catch (err) {
-    die(1, `search pagination failed: ${err instanceof Error ? err.message : err}`);
+    throw new Error(`[${slug}] search pagination failed: ${err instanceof Error ? err.message : err}`);
   }
 
   const mergedDays = mergeCounts(existing.days, counts, since, fullBackfill, LATEST_ONLY);
 
-  // F2 layer 3: never let an incremental run shrink the historical record.
-  // The overlap-merge can legitimately rewrite the last few days but cannot
-  // produce a strictly shorter list unless `fresh` was suspiciously empty.
-  // Any genuine shrink (deleted account, mass-delete) requires an explicit
-  // re-backfill (wipe existing.days and let fullBackfill=true seed it).
   if (!fullBackfill && mergedDays.length < existing.days.length) {
-    die(
-      2,
-      `merged days would shrink existing data ` +
+    throw new Error(
+      `[${slug}] merged days would shrink existing data ` +
         `(${existing.days.length} → ${mergedDays.length}) — refusing to commit. ` +
-        `If this is intentional, clear apps/web/src/data/x-days.json's days[] and re-run.`
+        `If this is intentional, clear ${dataPath}'s days[] and re-run.`
     );
   }
 
-  // F5: skip the write entirely when nothing material changed. Avoids ~365
-  // noise commits / Vercel rebuilds per year on quiet days. We update
-  // `generated_at` only when there IS a substantive change.
   const existingSorted = [...existing.days].sort((a, b) =>
     a.date < b.date ? -1 : a.date > b.date ? 1 : 0
   );
   const daysSame =
     JSON.stringify(existingSorted) === JSON.stringify(mergedDays);
   const idSame = existing.user_id === userId;
-  const handleSame = existing.handle === HANDLE;
+  const handleSame = existing.handle === handle;
   const tzSame = existing.bucketed_tz === TZ;
 
   if (daysSame && idSame && handleSame && tzSame) {
@@ -482,7 +541,7 @@ async function main(): Promise<void> {
     const today = dateKey(new Date());
     const todayCount = mergedDays.find((d) => d.date === today)?.count ?? 0;
     process.stdout.write(
-      `ok handle=${HANDLE} user_id=${userId} since=${since} full_backfill=${fullBackfill} ` +
+      `ok slug=${slug} handle=${handle} user_id=${userId} since=${since} full_backfill=${fullBackfill} ` +
         `days=${mergedDays.length} today=${today} today_count=${todayCount} skipped=1\n`
     );
     return;
@@ -491,23 +550,90 @@ async function main(): Promise<void> {
   const next: DataFile = {
     generated_at: new Date().toISOString(),
     user_id: userId,
-    handle: HANDLE,
+    handle,
     bucketed_tz: TZ,
     days: mergedDays,
   };
 
   try {
-    await saveData(next);
+    await saveData(dataPath, next);
   } catch (err) {
-    die(2, `write failed: ${err instanceof Error ? err.message : err}`);
+    throw new Error(`[${slug}] write failed: ${err instanceof Error ? err.message : err}`);
   }
 
   const today = dateKey(new Date());
   const todayCount = mergedDays.find((d) => d.date === today)?.count ?? 0;
   process.stdout.write(
-    `ok handle=${HANDLE} user_id=${userId} since=${since} full_backfill=${fullBackfill} ` +
+    `ok slug=${slug} handle=${handle} user_id=${userId} since=${since} full_backfill=${fullBackfill} ` +
       `days=${mergedDays.length} today=${today} today_count=${todayCount}\n`
   );
+}
+
+async function main(): Promise<void> {
+  // Build the list of targets. Priority:
+  //   1. LEGACY_X_LOGIN env set + USERS_FILTER empty → single-user legacy mode
+  //      (preserves the old `X_LOGIN=foo pnpm tsx scripts/refresh-x-days.ts`
+  //      invocation for local testing of a one-off handle that may not even
+  //      be in users.json yet). Maps the env handle to whichever roster slug
+  //      shares it, or falls back to slug="env".
+  //   2. Otherwise → walk users.json, optionally filtered by USERS_FILTER.
+  let targets: Array<{ slug: string; handle: string }>;
+  if (LEGACY_X_LOGIN && USERS_FILTER.length === 0) {
+    const roster = await loadRoster();
+    const match = roster.find((u) => u.xLogin === LEGACY_X_LOGIN);
+    if (match) {
+      log(`legacy single-user mode: X_LOGIN=${LEGACY_X_LOGIN} → slug=${match.slug}`);
+      targets = [{ slug: match.slug, handle: LEGACY_X_LOGIN }];
+    } else {
+      log(`legacy single-user mode: X_LOGIN=${LEGACY_X_LOGIN} not in roster, using slug="env"`);
+      targets = [{ slug: "env", handle: LEGACY_X_LOGIN }];
+    }
+  } else {
+    const roster = await loadRoster();
+    const filtered = USERS_FILTER.length
+      ? roster.filter((u) => USERS_FILTER.includes(u.slug))
+      : roster;
+    if (filtered.length === 0) {
+      die(
+        2,
+        `no users to refresh (USERS_FILTER=${USERS_FILTER.join(",")} matched none of ${roster.map((u) => u.slug).join(",")})`
+      );
+    }
+    targets = filtered.map((u) => ({ slug: u.slug, handle: u.xLogin }));
+  }
+
+  // Sequential: socialdata.tools has a shared rate limit per API key.
+  // For n=2 the wall time is fine (~10s total worst case); we can revisit
+  // bounded parallelism if the roster grows past ~5.
+  //
+  // Partial-success policy: a per-user failure throws but main() catches
+  // and continues to the next user. Only when ALL users fail do we exit
+  // non-zero, which is what blocks the workflow's commit step. This way a
+  // single transient socialdata error doesn't gate everyone else's daily
+  // refresh (reviewer-flagged 2026-06-01).
+  const failures: Array<{ slug: string; err: unknown }> = [];
+  for (const t of targets) {
+    try {
+      await processUser(t);
+    } catch (err) {
+      failures.push({ slug: t.slug, err });
+      log(`[${t.slug}] FAILED: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+  if (failures.length === targets.length) {
+    die(
+      1,
+      `all ${targets.length} user(s) failed; nothing to commit. ` +
+        `Last error: ${failures[failures.length - 1]?.err}`
+    );
+  }
+  if (failures.length > 0) {
+    // Partial success: print a clear summary line. We exit 0 so the
+    // workflow's commit step still runs on the survivors' data.
+    process.stdout.write(
+      `partial slugs_failed=${failures.length}/${targets.length} failed=${failures.map((f) => f.slug).join(",")}\n`
+    );
+  }
 }
 
 main().catch((err) => {

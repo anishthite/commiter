@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>2026-06-01 — multi-user dashboard (anish + subby) + mobile-optimized summary</title>
+<style>
+  body { font: 13px/1.45 ui-monospace, monospace; max-width: 980px; margin: 2rem auto; padding: 0 1rem; }
+  h1, h2 { font-family: ui-sans-serif, system-ui; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; }
+  th, td { border: 1px solid #ccc; padding: 4px 8px; vertical-align: top; }
+  th { background: #f4f4f4; text-align: left; }
+  code { background: #f4f4f4; padding: 1px 4px; }
+  .id { white-space: nowrap; font-weight: bold; }
+</style></head>
+<body>
+<h1>2026-06-01 — Multi-user dashboard: anish + subby, with mobile-optimized summary</h1>
+
+<p><strong>Scope.</strong> Today the app tracks one user (anish) at <code>/</code>. User wants:
+(1) track a second user, "subby" (GitHub <code>thecooltechguy</code>, X <code>subby_tech</code>);
+(2) the existing single-user view becomes <code>/[user]</code>;
+(3) <code>/</code> becomes a high-level summary showing both users side-by-side with a small per-user heatmap;
+(4) the whole thing mobile-optimized.</p>
+
+<p><strong>User-confirmed product decisions (ask_user_question, 2026-06-01).</strong></p>
+<ul>
+  <li>Config shape: <code>apps/web/src/config/users.json</code> committed to the repo.</li>
+  <li>Subby's handles: GH <code>thecooltechguy</code>, X <code>subby_tech</code>.</li>
+  <li>Summary cell content: name + shipped today (yes/no) + combined streak + tiny heatmap.</li>
+  <li>Mini heatmap: last 90 days, ~8px cells, mobile-first horizontal strip.</li>
+</ul>
+
+<h2>Decisions</h2>
+<table>
+  <tr><th>ID</th><th>What</th><th>Why</th></tr>
+  <tr><td class="id">D-024</td><td>User roster lives in <code>apps/web/src/config/users.json</code>, with shape <code>{ users: [{ slug, displayName, githubLogin, xLogin }] }</code>. Imported directly by both the runtime composer and the GH Action script. Single source of truth.</td><td>User explicitly chose this option over hardcoded array or env-var fanout. Keeps additions to a one-file edit and survives <code>process.env</code> being unset.</td></tr>
+  <tr><td class="id">D-025</td><td>Per-user X data files: <code>apps/web/src/data/x-days.{slug}.json</code>. Migration: rename existing <code>x-days.json</code> → <code>x-days.anish.json</code> (it already holds anish's data); create empty <code>x-days.subby.json</code> seed so the panel renders on first deploy.</td><td>Same file shape as today, just keyed by slug. Migration is a rename, not a schema change — preserves all of anish's backfilled history. The empty seed for subby lets the renderer treat his X panel as "offline until refresh runs" (same code path the original repo already handles).</td></tr>
+  <tr><td class="id">D-026</td><td><code>getSnapshot</code> takes an explicit <code>{ slug, githubLogin, xLogin }</code> argument instead of reading env. Env stays only as a fallback for the legacy single-user path.</td><td>The old code hardcoded <code>process.env.GITHUB_LOGIN</code>/<code>X_LOGIN</code>; that no longer matches a multi-user model. Passing the resolved user explicitly makes the composer a pure function of its input and is testable.</td></tr>
+  <tr><td class="id">D-027</td><td>Routes: <code>/</code> = summary page (both users); <code>/[user]</code> = per-user detail (the current page).</td><td>Matches the user's literal request. URL slugs are user.slug (e.g. <code>/anish</code>, <code>/subby</code>). <code>generateStaticParams</code> can pre-render both routes since the user list is static at build time.</td></tr>
+  <tr><td class="id">D-028</td><td>Summary cell content: name, big "yes."/"no." for shipped-today, combined-streak count, tiny 90-day heatmap. Click/tap whole cell → drill into <code>/[user]</code>.</td><td>User-confirmed option. Compact enough to fit two cells on a phone (stacked on narrow viewports, side-by-side on tablet+).</td></tr>
+  <tr><td class="id">D-029</td><td>New <code>MiniHeatmap</code> component, separate from existing <code>Heatmap</code>: last 90 days, ~8px cells with 1px gap, no axis labels, no tooltips. Reverse-chrono horizontal strip (newest right, oldest left).</td><td>Reusing <code>Heatmap</code> directly would inherit its month/day labels, tooltips, and 14px cells — too heavy for a summary cell. A separate stripped-down component is simpler than parameterizing the existing one with 6 toggle props.</td></tr>
+  <tr><td class="id">D-030</td><td>Refresh script (<code>scripts/refresh-x-days.ts</code>) and workflow updated to loop over <code>users.json</code>: read/write each user's own <code>x-days.{slug}.json</code>. One workflow run = one commit, refreshing every user's file in a single pass.</td><td>Splitting per-user runs would multiply commits, increase API quota burn, and complicate the deploy-hook trigger. A single sequential loop is fine for n=2; if we ever scale past ~10 users we'll revisit.</td></tr>
+  <tr><td class="id">D-031</td><td>Mobile layout: summary cells stack vertically below <code>sm</code> breakpoint (640px), side-by-side at <code>sm</code>+. Each cell is a full-width tap target on mobile with the heatmap below the stats. Within <code>/[user]</code>, the existing layout is already mobile-friendly — preserve it.</td><td>Two cells side-by-side at 320px viewport width = ~150px per cell, not enough room for a 90-day heatmap strip (90×9px = 810px). Stacking is the only honest fit on phones.</td></tr>
+</table>
+
+<h2>Tradeoffs</h2>
+<table>
+  <tr><th>ID</th><th>What</th><th>Cost</th></tr>
+  <tr><td class="id">T-014</td><td>Summary <code>/</code> page fetches snapshots for BOTH users in parallel, every render.</td><td>2× the GitHub GraphQL calls per render. Mitigated by the existing 1h fetch cache + 1h page revalidate; ceiling is ~24 GH calls/user/day from cold deploys, which is well below the 5000/hour rate limit on a single PAT.</td></tr>
+  <tr><td class="id">T-015</td><td>Mini heatmap doesn't show today's date or tooltips.</td><td>Less information on the summary. Intentional — the drill-in route has the full heatmap with tooltips; the summary's job is "did they ship?" at a glance, not data inspection.</td></tr>
+</table>
+
+<h2>Reversibility</h2>
+<table>
+  <tr><th>ID</th><th>Note</th></tr>
+  <tr><td class="id">R-008</td><td>If multi-user proves unwanted, revert by: (a) restore <code>page.tsx</code> from this commit's parent, (b) rename <code>x-days.anish.json</code> back to <code>x-days.json</code>, (c) delete <code>/[user]</code> route, (d) delete <code>users.json</code> and <code>MiniHeatmap.tsx</code>. The data files are forward-compatible: anish's full backfill survives the rename round-trip.</td></tr>
+</table>
+
+<h2>Followups</h2>
+<table>
+  <tr><th>ID</th><th>What</th></tr>
+  <tr><td class="id">L-007</td><td>The legacy env-fallback in <code>resolveUser()</code> synthesizes a user with <code>slug: "env"</code> when <code>GITHUB_LOGIN</code> doesn't match a roster entry. <code>X_DAYS_BY_SLUG</code> only registers roster slugs, so a fork using only env vars would silently hit <code>TwitterFeedOfflineError</code> and hide the X panel. Acceptable for our use (we always go through the roster) but worth flagging in README before the next forker hits it.</td></tr>
+  <tr><td class="id">L-008</td><td>Reviewer noted the workflow commit message is now generic ("refresh x-days") even when only one user's data changed. Easy enhancement: capture script stdout, parse the "ok slug=..." lines, build a richer commit message. Not blocking.</td></tr>
+</table>
+
+<h2>Open questions</h2>
+<table>
+  <tr><th>ID</th><th>Question</th></tr>
+  <tr><td class="id">Q-006</td><td>Should the summary headline read "did we ship?" (collective) or list each user separately? Going with the latter (two cells, no collective question) since the existing per-user page already handles the question framing.</td></tr>
+  <tr><td class="id">Q-007</td><td>Are both users using the same <code>GITHUB_TOKEN</code> PAT? Assumed yes — a single PAT with <code>read:user</code> can pull any user's <em>public</em> contributions calendar via GraphQL. Private contribs only show through for the token's owner. Acceptable since subby is being tracked, not authenticated as.</td></tr>
+</table>
+
+</body></html>

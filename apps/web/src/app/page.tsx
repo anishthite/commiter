@@ -1,116 +1,182 @@
+import Link from "next/link";
 import { getSnapshot } from "@/lib/snapshot";
-import { getOneLiner } from "@/lib/oneliner";
-import { MagiPanel } from "@/lib/nerv/MagiPanel";
+import type { Snapshot } from "@/lib/snapshot";
+import { MiniHeatmap } from "@/lib/nerv/MiniHeatmap";
+import { USERS, type UserConfig } from "@/config/users";
 
-// Snapshot is fetched on the server with each underlying source cached
-// 1h at the Next.js fetch layer (D-004). Page-level revalidate aligns
-// the SSR render frequency with the data freshness window.
+// Summary page — both/all users at a glance (D-027/D-028, 2026-06-01).
+// SSR with the same 1h revalidate as the per-user route; the underlying
+// fetches are cached at the fetch layer so two users = ~2× GH calls, not
+// 2× per-render compute.
 export const revalidate = 3600;
 
-export default async function Page() {
-  let snapshot;
-  let oneliner = "";
-  let error: string | null = null;
-  try {
-    snapshot = await getSnapshot(365);
-    oneliner = await getOneLiner(snapshot);
-  } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
-  }
+type UserCardData = {
+  user: UserConfig;
+  snapshot: Snapshot | null;
+  error: string | null;
+};
 
-  const ghToday = snapshot?.channels.github.today_count ?? 0;
-  const xToday = snapshot?.channels.twitter.today_count ?? 0;
-  const xOffline = snapshot?.channels.twitter.offline === true;
-  const shipped = xOffline ? ghToday > 0 : ghToday > 0 && xToday > 0;
+async function loadAll(): Promise<UserCardData[]> {
+  return Promise.all(
+    USERS.map(async (user): Promise<UserCardData> => {
+      try {
+        const snapshot = await getSnapshot({ user, days: 365 });
+        return { user, snapshot, error: null };
+      } catch (e) {
+        return {
+          user,
+          snapshot: null,
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
+    })
+  );
+}
 
-  const combinedCurrent = snapshot?.combined.streak_current ?? 0;
+export default async function SummaryPage() {
+  const cards = await loadAll();
+  const anyShipped = cards.some((c) => isShipped(c.snapshot));
+  const generated = cards.find((c) => c.snapshot)?.snapshot?.generated_at ?? "";
 
   return (
-    <main className="min-h-screen px-4 py-8 sm:px-6 sm:py-12 max-w-6xl mx-auto">
-      {error ? (
-        <div className="text-nerv-warn p-4 mb-6 text-sm">
-          <div className="uppercase tracking-widest mb-2">SYS:FAULT</div>
-          <code className="font-mono text-xs whitespace-pre-wrap">{error}</code>
-          <div className="mt-3 text-xs text-nerv-text/80">
-            Check <code className="text-nerv-amber">GITHUB_TOKEN</code>,{" "}
-            <code className="text-nerv-amber">GITHUB_LOGIN</code>, and{" "}
-            <code className="text-nerv-amber">X_LOGIN</code> in{" "}
-            <code className="text-nerv-amber">apps/web/.env.local</code>.
-          </div>
-        </div>
-      ) : (
-        snapshot && (
-          <>
-            <header className="mb-6 sm:mb-8">
-              <h1 className="text-nerv-amber text-2xl sm:text-3xl lowercase font-mono tracking-tight">
-                did anish ship today?
-              </h1>
-              <h2
-                className={
-                  "mt-1 text-6xl sm:text-7xl font-mono leading-none tabular-nums " +
-                  (shipped ? "text-nerv-amber" : "text-nerv-orange")
-                }
-              >
-                {shipped ? "yes." : "no."}
-              </h2>
+    <main className="min-h-screen px-4 py-6 sm:px-6 sm:py-12 max-w-4xl mx-auto">
+      <header className="mb-6 sm:mb-10">
+        <h1 className="text-nerv-amber text-xl sm:text-3xl lowercase font-mono tracking-tight">
+          did we ship today?
+        </h1>
+        <p className="mt-1 text-[10px] sm:text-xs uppercase tracking-widest text-nerv-text/60">
+          {anyShipped ? "at least one of us did." : "the day is still young."}
+        </p>
+      </header>
 
-              {/* Single-line status: combined streak + LLM oneliner.
-                  The per-channel today counts already live inside the
-                  GitHub/X panels below, so we don't repeat them here. */}
-              <div className="mt-4 flex flex-wrap items-baseline gap-x-6 gap-y-2 text-sm sm:text-base font-mono lowercase">
-                <span className="text-nerv-text/90">
-                  <span className="text-nerv-amber text-xl sm:text-2xl tabular-nums">
-                    {combinedCurrent}
-                  </span>
-                  <span className="text-nerv-text/70"> day streak</span>
-                </span>
+      <div className="grid gap-3 sm:gap-4 sm:grid-cols-2">
+        {cards.map((card) => (
+          <UserCard key={card.user.slug} card={card} />
+        ))}
+      </div>
 
-                {oneliner && (
-                  <span className="text-nerv-text/90 basis-full sm:basis-auto sm:flex-1 sm:min-w-0">
-                    <span className="text-nerv-orange/80 mr-2">&gt;</span>
-                    {oneliner}
-                  </span>
-                )}
-              </div>
-            </header>
-
-            <div
-              className={
-                xOffline
-                  ? "grid gap-4"
-                  : "grid gap-4 grid-cols-2"
-              }
-            >
-              <MagiPanel
-                label="GITHUB"
-                unit="commits"
-                data={snapshot.channels.github}
-              />
-              {!xOffline && (
-                <MagiPanel
-                  label="X"
-                  unit="tweets"
-                  data={snapshot.channels.twitter}
-                />
-              )}
-            </div>
-
-            {xOffline && (
-              <p className="mt-3 text-[10px] uppercase tracking-widest text-nerv-text/60">
-                x panel hidden — set <code className="text-nerv-text/80">X_LOGIN</code> and run the{" "}
-                <code className="text-nerv-text/80">refresh-x-days</code> action (needs{" "}
-                <code className="text-nerv-text/80">SOCIALDATA_API_KEY</code> in GH Secrets); data file is bundled at{" "}
-                <code className="text-nerv-text/80">apps/web/src/data/x-days.json</code>
-              </p>
-            )}
-
-            <footer className="mt-8 text-[10px] uppercase tracking-widest text-nerv-text/60">
-              {snapshot.generated_at.slice(0, 10)} ·{" "}
-              {snapshot.generated_at.slice(11, 16)}Z
-            </footer>
-          </>
-        )
+      {generated && (
+        <footer className="mt-8 text-[10px] uppercase tracking-widest text-nerv-text/60">
+          {generated.slice(0, 10)} · {generated.slice(11, 16)}Z
+        </footer>
       )}
     </main>
   );
+}
+
+function isShipped(snapshot: Snapshot | null): boolean {
+  if (!snapshot) return false;
+  const ghToday = snapshot.channels.github.today_count;
+  const xToday = snapshot.channels.twitter.today_count;
+  const xOffline = snapshot.channels.twitter.offline === true;
+  return xOffline ? ghToday > 0 : ghToday > 0 && xToday > 0;
+}
+
+function UserCard({ card }: { card: UserCardData }) {
+  const { user, snapshot, error } = card;
+  const shipped = isShipped(snapshot);
+  const streak = snapshot?.combined.streak_current ?? 0;
+
+  // The combined-days series is the right input for the heatmap on the
+  // summary: it's the visual answer to "did they ship that day?" matching
+  // the same yes/no question this card is asking. When Twitter's offline
+  // the snapshot already degrades combined to github-only.
+  // We approximate by intersecting per-channel days here so we don't have
+  // to widen the Snapshot wire shape just for the summary view.
+  const heatmapDays = snapshot ? deriveCombinedDays(snapshot) : [];
+
+  return (
+    <Link
+      href={`/${user.slug}`}
+      // Whole card is a tap target. min-h on mobile so the tap zone is
+      // generous even before the heatmap row. focus-visible ring rather
+      // than a 1px border swap so keyboard focus is actually perceivable
+      // (reviewer-flagged 2026-06-01).
+      className={
+        "block p-4 sm:p-5 rounded-md transition-colors " +
+        "border border-nerv-text/25 hover:border-nerv-amber/60 " +
+        "focus:outline-none focus-visible:ring-2 focus-visible:ring-nerv-amber focus-visible:border-nerv-amber " +
+        "active:border-nerv-amber min-h-[8rem]"
+      }
+    >
+      <div className="flex items-baseline justify-between gap-2 mb-1">
+        <span className="text-nerv-amber text-sm sm:text-base lowercase font-mono tracking-tight truncate">
+          {user.displayName}
+        </span>
+        <span className="text-[10px] uppercase tracking-widest text-nerv-text/50 shrink-0">
+          {user.githubLogin}
+        </span>
+      </div>
+
+      {error ? (
+        <div className="text-nerv-warn text-xs font-mono mt-2 whitespace-pre-wrap break-words">
+          sys:fault — {error.slice(0, 80)}
+          {error.length > 80 ? "…" : ""}
+        </div>
+      ) : snapshot ? (
+        <>
+          <div className="flex items-baseline gap-3 sm:gap-4">
+            <span
+              className={
+                "text-4xl sm:text-5xl font-mono leading-none tabular-nums " +
+                (shipped ? "text-nerv-amber" : "text-nerv-orange")
+              }
+            >
+              {shipped ? "yes." : "no."}
+            </span>
+            <span className="text-nerv-text/90 font-mono lowercase text-sm sm:text-base">
+              <span className="text-nerv-amber text-lg sm:text-xl tabular-nums">
+                {streak}
+              </span>
+              <span className="text-nerv-text/70"> day streak</span>
+            </span>
+          </div>
+
+          <div className="mt-3 sm:mt-4">
+            {/* 60d at 3px+1px = 239px — fits inside the 320px-viewport card */}
+            {/* content area (~256px). Avoids the swipe-vs-tap conflict that */}
+            {/* an overflowing horizontal-scroll heatmap inside a <Link> would */}
+            {/* cause. At sm+ the card has plenty of room; we still cap the */}
+            {/* window at 60d for visual rhythm parity with mobile. */}
+            <MiniHeatmap days={heatmapDays} windowDays={60} cellPx={3} gapPx={1} />
+          </div>
+
+          {snapshot.channels.twitter.offline && (
+            <p className="mt-2 text-[9px] uppercase tracking-widest text-nerv-text/40">
+              x offline · github-only streak
+            </p>
+          )}
+        </>
+      ) : (
+        <div className="text-nerv-text/40 text-xs">no data</div>
+      )}
+    </Link>
+  );
+}
+
+/**
+ * Approximate the same combined-days series the per-channel composer uses.
+ * Aligned by date: same date arrays come out of `fillMissingDays` for both
+ * channels, so a zip-AND is faithful to the snapshot's combined view.
+ * When Twitter is offline, fall back to github-only — same degradation
+ * mode as `snapshot.ts`.
+ */
+function deriveCombinedDays(snapshot: Snapshot) {
+  const gh = snapshot.channels.github.days;
+  const tw = snapshot.channels.twitter.days;
+  if (snapshot.channels.twitter.offline) return gh;
+  if (gh.length !== tw.length) {
+    // Defensive: gh/tw days come from the same fillMissingDays(from, to)
+    // call, so this is currently unreachable. Logging makes future
+    // regressions surface in dev rather than silently degrading to GH-only.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[summary] gh/tw day-array length mismatch for ${snapshot.user.slug}: ${gh.length} vs ${tw.length}`
+    );
+    return gh;
+  }
+  return gh.map((d, i) => ({
+    date: d.date,
+    count: d.count > 0 && (tw[i]?.count ?? 0) > 0 ? Math.min(d.count, tw[i]!.count) : 0,
+  }));
 }

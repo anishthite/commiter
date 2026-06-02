@@ -1,7 +1,8 @@
 name: refresh-x-days
 
-# Daily refresh of apps/web/src/data/x-days.json from socialdata.tools.
-# Commits the new counts back to main, which triggers a Vercel rebuild.
+# Daily refresh of apps/web/src/data/x-days.{slug}.json from socialdata.tools.
+# Iterates every user in apps/web/src/config/users.json and commits all
+# changed files back to main, which triggers a Vercel rebuild.
 #
 # Schedule: 09:00 UTC ≈ 01:00 PST / 02:00 PDT (the exact local time drifts
 # with US DST — both are well past midnight PT so the prior day's tweets
@@ -47,18 +48,24 @@ jobs:
       - name: refresh x-days
         env:
           SOCIALDATA_API_KEY: ${{ secrets.SOCIALDATA_API_KEY }}
-          X_LOGIN: anishthite
-          # Fetch only the most recent tweet each run (~1 API call, ~$0.0002).
-          # Merge is additive: stamp that tweet's day as count>=1, never
-          # decrement historical days. Heatmap fills out one day at a time
-          # as a binary "did you ship that day?" signal.
+          # Multi-user mode (D-030): the script reads the roster from
+          # apps/web/src/config/users.json and refreshes one bundled file per
+          # user (x-days.{slug}.json). Leave X_LOGIN UNSET so the legacy
+          # single-user override path isn't taken.
+          # Fetch only the most recent tweet per user each run
+          # (~1 API call per user, ~$0.0002). Additive merge — historical
+          # days never decrement. Heatmap fills out one day at a time as a
+          # binary "did you ship that day?" signal.
           LATEST_ONLY: "1"
         run: pnpm tsx scripts/refresh-x-days.ts
 
       - name: commit if changed
         id: commit
         run: |
-          if git diff --quiet apps/web/src/data/x-days.json; then
+          # Multi-user: any per-slug data file may have changed. Use the
+          # directory-level diff so a single user's update still triggers a
+          # commit, and a no-op across all users still cleanly skips.
+          if git diff --quiet apps/web/src/data/; then
             echo "committed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -74,7 +81,9 @@ jobs:
           # Vercel's git integration is ever disconnected.
           git config user.name "x-refresh-bot"
           git config user.email "14373068+anishthite@users.noreply.github.com"
-          git add apps/web/src/data/x-days.json
+          # Stage only the x-days payload files — if anything else in the
+          # data/ dir changed accidentally, we don't want to drag it along.
+          git add apps/web/src/data/x-days.*.json
           # F7: rebase any in-flight changes on the branch before commit/push
           # to avoid losing a queued-schedule run's work to a non-fast-forward
           # rejection after a finishing workflow_dispatch. The data file is

@@ -1,48 +1,43 @@
 import "server-only";
 import { fillMissingDays, type Day } from "./streak";
-import xDaysData from "../data/x-days.json";
+import xDaysAnish from "../data/x-days.anish.json";
+import xDaysSubby from "../data/x-days.subby.json";
 
 /**
  * Twitter source — bundled static JSON, refreshed daily by a GitHub Action.
  *
  * Final architecture (D-029, 2026-05-29):
- * after a day of failed live-scraping experiments (public RSS mirrors
- * blocked from Vercel egress, syndication.twitter.com returning stale
- * curated data), the dashboard now reads tweet day-counts from a JSON
- * file checked into this repo at `apps/web/src/data/x-days.json`. A
- * daily GitHub Action
- * (`.github/workflows/refresh-x-days.yml`) calls socialdata.tools to
- * paginate the user's recent tweets, buckets them in `NERV_TZ`, merges
- * into the JSON, and commits → Vercel rebuild → fresh data ships.
+ * the dashboard reads tweet day-counts from JSON files checked into this
+ * repo at `apps/web/src/data/x-days.{slug}.json` (one per tracked user).
+ * A daily GitHub Action calls socialdata.tools to paginate each user's
+ * recent tweets, buckets them in `NERV_TZ`, merges into the JSON, and
+ * commits → Vercel rebuild → fresh data ships.
  *
- * Tradeoff: data freshness is tied to the daily Action + deploy cycle,
- * not real-time. Acceptable: the dashboard is a "did I ship today?"
- * tracker, not a live feed; one-day latency is invisible to the user.
- *
- * If the bundled JSON is malformed or empty, throw `TwitterFeedOfflineError`
- * so snapshot.ts's existing catch-and-degrade path hides the panel.
+ * Multi-user (D-025, 2026-06-01): the bundled JSON is now keyed by `slug`
+ * (the `users.json` roster slug). `fetchTwitterDays` requires an explicit
+ * slug to pick the file. Statically importing both keeps Next bundling
+ * deterministic — adding a third user is a one-line registry entry.
  */
 
-/**
- * Wire shape of `x-days.json`. The shape is intentionally tolerant — we
- * only require `days` to be an array of `{date, count}`; extra fields
- * (`generated_at`, `handle`, `user_id`) are ignored at render time and
- * exist purely for the refresh script's bookkeeping.
- */
 type XDaysFile = {
   days?: unknown;
   generated_at?: unknown;
   user_id?: unknown;
   handle?: unknown;
-  /** IANA tz the refresh script used to bucket `days[]`. Required for
-   *  tz-consistency validation at read time (F10). Absent on legacy files
-   *  pre-dating the consistency check — a warning is logged once. */
   bucketed_tz?: unknown;
 };
 
-// Module-level flag so the legacy-file warning fires at most once per
-// process, not once per request.
-let bucketedTzLegacyWarned = false;
+// Registry of bundled per-slug data files. Statically registered so the
+// Next bundler picks them up at build time. Adding a user = one entry here
+// plus a `x-days.{slug}.json` seed file plus a `users.json` roster row.
+const X_DAYS_BY_SLUG: Record<string, XDaysFile> = {
+  anish: xDaysAnish as XDaysFile,
+  subby: xDaysSubby as XDaysFile,
+};
+
+// Per-slug latch so the legacy-file warning fires at most once per slug
+// per process, not once per request.
+const bucketedTzLegacyWarned = new Set<string>();
 
 export class TwitterFeedOfflineError extends Error {
   attempts: Array<{ host: string; reason: string }>;
@@ -54,8 +49,10 @@ export class TwitterFeedOfflineError extends Error {
 }
 
 export type FetchTwitterOpts = {
+  /** Roster slug — picks the bundled `x-days.{slug}.json` file. */
+  slug: string;
   /** Handle, no leading @. Retained so the snapshot composer can refuse to
-   *  render the panel when X_LOGIN is unset (panel-presence logic). */
+   *  render the panel when xLogin is unset (panel-presence logic). */
   login: string;
   /** IANA tz; ignored at read time — the bundled JSON is pre-bucketed by
    *  the refresh script. Retained for signature stability. */
@@ -69,21 +66,29 @@ export type FetchTwitterOpts = {
 };
 
 export async function fetchTwitterDays(opts: FetchTwitterOpts): Promise<Day[]> {
-  const { login, from, to } = opts;
+  const { slug, login, from, to } = opts;
   if (!login) {
     throw new Error(
-      "Twitter fetch: X_LOGIN is empty. Set X_LOGIN=<your handle> in apps/web/.env.local."
+      `Twitter fetch: xLogin is empty for slug=${slug}. Configure it in apps/web/src/config/users.json.`
     );
   }
   if (to < from) {
     throw new Error(`fetchTwitterDays: to (${to}) is before from (${from})`);
   }
 
-  const file = xDaysData as XDaysFile;
+  const file = X_DAYS_BY_SLUG[slug];
+  if (!file) {
+    throw new TwitterFeedOfflineError([
+      { host: "bundled-json", reason: `no bundled x-days file for slug=${slug}` },
+    ]);
+  }
   const rawDays = file.days;
   if (!Array.isArray(rawDays)) {
     throw new TwitterFeedOfflineError([
-      { host: "bundled-json", reason: "x-days.json missing/invalid `days` array" },
+      {
+        host: "bundled-json",
+        reason: `x-days.${slug}.json missing/invalid \`days\` array`,
+      },
     ]);
   }
 
@@ -97,22 +102,19 @@ export async function fetchTwitterDays(opts: FetchTwitterOpts): Promise<Day[]> {
       throw new TwitterFeedOfflineError([
         {
           host: "bundled-json",
-          reason: `tz mismatch: file=${bucketedTz}, runtime=${opts.tz}`,
+          reason: `tz mismatch for slug=${slug}: file=${bucketedTz}, runtime=${opts.tz}`,
         },
       ]);
     }
-  } else if (!bucketedTzLegacyWarned) {
-    bucketedTzLegacyWarned = true;
+  } else if (!bucketedTzLegacyWarned.has(slug)) {
+    bucketedTzLegacyWarned.add(slug);
     // eslint-disable-next-line no-console
     console.warn(
-      "[twitter] x-days.json has no `bucketed_tz` field — cannot validate tz " +
+      `[twitter] x-days.${slug}.json has no \`bucketed_tz\` field — cannot validate tz ` +
         "consistency. Re-run scripts/refresh-x-days.ts to stamp it."
     );
   }
 
-  // Track shape-valid rows separately from window-filtered rows so we can
-  // distinguish "file rotted" (every row failed validation) from "window
-  // legitimately empty" (rows exist but fall outside [from, to]).
   let shapeOk = 0;
   const rows: Array<{ date: string; count: number }> = [];
   for (const item of rawDays) {
@@ -126,26 +128,22 @@ export async function fetchTwitterDays(opts: FetchTwitterOpts): Promise<Day[]> {
     rows.push({ date: d, count: c });
   }
 
-  // An empty days array is a legitimate first-deploy state (the GH Action
-  // hasn't run yet). Degrade the panel instead of pretending we have data.
+  // Empty days[] = first-deploy state (GH Action hasn't run for this slug
+  // yet). Degrade the panel instead of pretending we have data.
   if (rawDays.length === 0) {
     throw new TwitterFeedOfflineError([
       {
         host: "bundled-json",
-        reason: "x-days.json has empty days[] — GH Action has not run yet",
+        reason: `x-days.${slug}.json has empty days[] — GH Action has not run yet for this user`,
       },
     ]);
   }
 
-  // F9: rawDays is non-empty but every row failed shape validation. The
-  // producer (refresh script) validates shape on write; if the consumer
-  // sees a populated file where nothing validates, the file is corrupt or
-  // the wire shape drifted — surface as offline, not as silent zero-fill.
   if (shapeOk === 0) {
     throw new TwitterFeedOfflineError([
       {
         host: "bundled-json",
-        reason: "all days[] entries failed shape validation",
+        reason: `all days[] entries failed shape validation for slug=${slug}`,
       },
     ]);
   }
