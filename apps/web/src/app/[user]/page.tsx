@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getSnapshot } from "@/lib/snapshot";
-import { getOneLiner } from "@/lib/oneliner";
 import { MagiPanel } from "@/lib/nerv/MagiPanel";
 import { ThemeToggle } from "@/lib/nerv/ThemeToggle";
 import { USERS, getUserBySlug } from "@/config/users";
@@ -30,11 +29,9 @@ export default async function UserPage({
   }
 
   let snapshot;
-  let oneliner = "";
   let error: string | null = null;
   try {
     snapshot = await getSnapshot({ user: userCfg!, days: 365 });
-    oneliner = await getOneLiner(snapshot);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
@@ -109,13 +106,6 @@ export default async function UserPage({
                   </span>
                   <span className="text-nerv-text/70"> day streak</span>
                 </span>
-
-                {oneliner && (
-                  <span className="text-nerv-text/90 basis-full sm:basis-auto sm:flex-1 sm:min-w-0">
-                    <span className="text-nerv-orange/80 mr-2">&gt;</span>
-                    {oneliner}
-                  </span>
-                )}
               </div>
             </header>
 
