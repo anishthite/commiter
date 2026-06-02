@@ -129,12 +129,12 @@ function UserCard({ card }: { card: UserCardData }) {
           </div>
 
           <div className="mt-3 sm:mt-4">
-            {/* 60d at 3px+1px = 239px — fits inside the 320px-viewport card */}
+            {/* 42d at 5px+1px = 251px — fits inside the 320px-viewport card */}
             {/* content area (~256px). Avoids the swipe-vs-tap conflict that */}
             {/* an overflowing horizontal-scroll heatmap inside a <Link> would */}
-            {/* cause. At sm+ the card has plenty of room; we still cap the */}
-            {/* window at 60d for visual rhythm parity with mobile. */}
-            <MiniHeatmap days={heatmapDays} windowDays={60} cellPx={3} gapPx={1} />
+            {/* cause. Bumped from 3px/60d (2026-06-02) — dots were too small */}
+            {/* to read at a glance; 6 weeks still gives enough rhythm. */}
+            <MiniHeatmap days={heatmapDays} windowDays={42} cellPx={5} gapPx={1} />
           </div>
 
           {snapshot.channels.twitter.offline && (
