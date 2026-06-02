@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { getSnapshot } from "@/lib/snapshot";
 import { getOneLiner } from "@/lib/oneliner";
 import { MagiPanel } from "@/lib/nerv/MagiPanel";
+import { ThemeToggle } from "@/lib/nerv/ThemeToggle";
 import { USERS, getUserBySlug } from "@/config/users";
 
 export const revalidate = 3600;
@@ -70,6 +71,9 @@ export default async function UserPage({
             {u.displayName}
           </Link>
         ))}
+        <span className="ml-auto">
+          <ThemeToggle />
+        </span>
       </nav>
 
       {error ? (

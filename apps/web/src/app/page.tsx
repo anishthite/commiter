@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getSnapshot } from "@/lib/snapshot";
 import type { Snapshot } from "@/lib/snapshot";
 import { MiniHeatmap } from "@/lib/nerv/MiniHeatmap";
+import { ThemeToggle } from "@/lib/nerv/ThemeToggle";
 import { USERS, type UserConfig } from "@/config/users";
 
 // Summary page — both/all users at a glance (D-027/D-028, 2026-06-01).
@@ -39,10 +40,11 @@ export default async function SummaryPage() {
 
   return (
     <main className="min-h-screen px-4 py-6 sm:px-6 sm:py-12 max-w-4xl mx-auto">
-      <header className="mb-6 sm:mb-10">
+      <header className="mb-6 sm:mb-10 flex items-baseline justify-between gap-3">
         <h1 className="text-nerv-amber text-xl sm:text-3xl lowercase font-mono tracking-tight">
           did we ship today?
         </h1>
+        <ThemeToggle />
       </header>
 
       <div className="grid gap-3 sm:gap-4 sm:grid-cols-2">

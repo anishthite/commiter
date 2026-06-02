@@ -18,13 +18,15 @@ const MONTH_ABBR = [
   "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
 ];
 
-// Backgrounds keyed by intensity level (0..4).
+// Backgrounds keyed by intensity level (0..4). CSS vars so the same
+// component renders correctly under both light and dark themes — actual
+// values live in globals.css.
 const CELL_COLORS: Record<0 | 1 | 2 | 3 | 4, string> = {
-  0: "#1a0a00",
-  1: "#3a1a00",
-  2: "#8a3500",
-  3: "#ff6600",
-  4: "#ffaa33",
+  0: "var(--cell-0)",
+  1: "var(--cell-1)",
+  2: "var(--cell-2)",
+  3: "var(--cell-3)",
+  4: "var(--cell-4)",
 };
 
 /**
@@ -111,7 +113,7 @@ export function Heatmap({ days }: { days: Day[] }) {
                     <div
                       className={
                         "absolute z-20 left-1/2 -translate-x-1/2 top-full mt-1.5 " +
-                        "px-2 py-1 bg-black border border-nerv-orange/70 " +
+                        "px-2 py-1 bg-nerv-bg border border-nerv-orange/70 " +
                         "text-[10px] font-mono uppercase tracking-widest text-nerv-orange " +
                         "whitespace-nowrap opacity-0 group-hover:opacity-100 " +
                         "transition-opacity pointer-events-none"

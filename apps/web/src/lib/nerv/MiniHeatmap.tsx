@@ -15,12 +15,13 @@ import { intensity } from "../heatmap";
  * of the summary card.
  */
 
+// CSS variables — light/dark palettes live in globals.css.
 const CELL_COLORS: Record<0 | 1 | 2 | 3 | 4, string> = {
-  0: "#1a0a00",
-  1: "#3a1a00",
-  2: "#8a3500",
-  3: "#ff6600",
-  4: "#ffaa33",
+  0: "var(--cell-0)",
+  1: "var(--cell-1)",
+  2: "var(--cell-2)",
+  3: "var(--cell-3)",
+  4: "var(--cell-4)",
 };
 
 export type MiniHeatmapProps = {
