@@ -9,7 +9,7 @@ name: refresh-x-days
 # are settled by then).
 on:
   schedule:
-    - cron: "0 9 * * *"
+    - cron: "0 9,21 * * *"
   workflow_dispatch:
 
 permissions:
