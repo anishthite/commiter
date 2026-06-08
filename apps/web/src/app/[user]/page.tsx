@@ -15,6 +15,33 @@ export function generateStaticParams() {
 
 type Params = { user: string };
 
+function Last7({ snapshot }: { snapshot: Awaited<ReturnType<typeof getSnapshot>> }) {
+  const gh = snapshot.channels.github.days;
+  const tw = snapshot.channels.twitter.days;
+  const xOffline = snapshot.channels.twitter.offline === true;
+  const n = gh.length;
+  const cells = [] as { date: string; shipped: boolean }[];
+  for (let i = Math.max(0, n - 7); i < n; i++) {
+    const g = (gh[i]?.count ?? 0) > 0;
+    const t = (tw[i]?.count ?? 0) > 0;
+    cells.push({ date: gh[i]!.date, shipped: xOffline ? g : g && t });
+  }
+  return (
+    <div className="flex items-center gap-1" aria-label="last 7 days">
+      {cells.map((c) => (
+        <span
+          key={c.date}
+          title={`${c.date} · ${c.shipped ? "shipped" : "missed"}`}
+          className={
+            "inline-block w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-[2px] " +
+            (c.shipped ? "bg-nerv-amber" : "bg-nerv-text/15")
+          }
+        />
+      ))}
+    </div>
+  );
+}
+
 export default async function UserPage({
   params,
 }: {
@@ -99,13 +126,14 @@ export default async function UserPage({
                 {shipped ? "yes." : "no."}
               </h2>
 
-              <div className="mt-4 flex flex-wrap items-baseline gap-x-6 gap-y-2 text-sm sm:text-base font-mono lowercase">
+              <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm sm:text-base font-mono lowercase">
                 <span className="text-nerv-text/90">
                   <span className="text-nerv-amber text-xl sm:text-2xl tabular-nums">
                     {combinedCurrent}
                   </span>
                   <span className="text-nerv-text/70"> day streak</span>
                 </span>
+                <Last7 snapshot={snapshot} />
               </div>
             </header>
 
