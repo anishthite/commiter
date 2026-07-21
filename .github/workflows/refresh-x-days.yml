@@ -30,6 +30,11 @@ jobs:
           # for repos without branch-protection rules requiring a PAT.
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Manual reruns can start from the old triggering SHA; refresh from the
+      # current branch tip so data generation uses the current file schema.
+      - name: sync branch tip
+        run: git pull --ff-only origin "${GITHUB_REF_NAME}"
+
       # F6: SHA-pin third-party action so a moving major tag can't pull in
       # a malicious commit during a run that already has GITHUB_TOKEN and
       # SOCIALDATA_API_KEY in scope. The pinned SHA is pnpm/action-setup v3.0.0.
@@ -80,16 +85,14 @@ jobs:
           # Vercel's git integration is ever disconnected.
           git config user.name "x-refresh-bot"
           git config user.email "14373068+anishthite@users.noreply.github.com"
-          # Stage only the x-days payload — if anything else in data/ changed
-          # accidentally, we don't want to drag it along.
-          git add apps/web/src/data/x-days-by-slug.json
-          # F7: rebase any in-flight changes on the branch before commit/push
-          # to avoid losing a queued-schedule run's work to a non-fast-forward
-          # rejection after a finishing workflow_dispatch. The data file is
-          # regenerated from scratch each run with overlap-merge logic, so
-          # replaying our result on top of a newer base yields the same
-          # authoritative state.
-          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          # Do not autostash generated data across branch/schema changes: that
+          # is how stale runs resurrect deleted x-days.*.json files as conflicts.
+          git fetch origin "${GITHUB_REF_NAME}"
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse FETCH_HEAD)" ]; then
+            echo "Branch moved during refresh; rerun refresh-x-days on the latest branch tip."
+            exit 1
+          fi
+          git add apps/web/src/data/
           git commit -m "data: refresh x-days $(date -u +%Y-%m-%d)"
           git push
           echo "committed=true" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Spec — refresh-action-stale-sha</title>
+<meta name="task" content="Stop refresh-x-days stale-SHA autostash conflicts">
+<meta name="date-started" content="2026-07-21">
+<meta name="date-updated" content="2026-07-21">
+<meta name="status" content="ready-for-review">
+<meta name="blast-radius" content="medium">
+<meta name="tags" content="github-actions,x-refresh,stale-sha,data-migration">
+<meta name="related" content="2026-07-21-self-serve-people.html,2026-05-29-socialdata-migration.html">
+<style>
+  body { font: 14px/1.45 -apple-system, system-ui, sans-serif; max-width: 880px; margin: 1.5rem auto; padding: 0 1rem; color: #111; }
+  h1 { font-size: 20px; margin: 0 0 .25rem; }
+  h2 { font-size: 15px; margin: 1.4rem 0 .4rem; border-bottom: 1px solid #ddd; padding-bottom: .2rem; }
+  table { border-collapse: collapse; width: 100%; margin: .4rem 0 .8rem; }
+  th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; vertical-align: top; }
+  th { background: #f6f6f6; font-weight: 600; }
+  code { font-family: ui-monospace, Menlo, monospace; background: #f1f1f1; padding: 1px 4px; border-radius: 3px; font-size: 12.5px; }
+  ul, ol { margin: .3rem 0 .8rem 1.2rem; padding: 0; }
+  li { margin: .15rem 0; }
+  .blast-med { color: #b85c00; }
+  .meta { color: #555; font-size: 12.5px; margin-bottom: .8rem; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 2px 14px; font-size: 13px; margin: .4rem 0 1rem; }
+  .kv b { color: #444; font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>Refresh action stale-SHA guard</h1>
+<p class="meta"><code>main</code> · worktree <code>/Users/anishthite/workspace/commiter</code> · 2026-07-21 · status <b>ready-for-review</b> · blast <span class="blast-med">medium</span></p>
+
+<h2>Summary</h2>
+<div class="kv">
+  <b>Goal</b><div>Stop stale <code>refresh-x-days</code> runs from autostashing old data files over the one-file X data migration.</div>
+  <b>Source</b><div>Manual Action log shows <code>git pull --rebase --autostash</code> conflicting on deleted <code>x-days.*.json</code> files.</div>
+  <b>Surface</b><div><code>.github/workflows/refresh-x-days.yml</code>.</div>
+  <b>Schema</b><div>No data schema change.</div>
+  <b>Open Qs</b><div>0.</div>
+</div>
+
+<h2>Files</h2>
+<table>
+  <tr><th>Path</th><th>Kind</th><th>Delta</th></tr>
+  <tr><td><code>.github/workflows/refresh-x-days.yml</code></td><td>touch</td><td>Sync to branch tip before refresh and replace dirty-tree autostash with a branch-moved guard.</td></tr>
+  <tr><td><code>implementation-notes/2026-07-21-refresh-action-stale-sha.html</code></td><td>new</td><td>Record the workflow race decision.</td></tr>
+  <tr><td><code>implementation-notes/INDEX.html</code></td><td>touch</td><td>Add this task row.</td></tr>
+</table>
+
+<h2>Decisions</h2>
+<table>
+  <tr><th>ID</th><th>Choice · Rationale</th></tr>
+  <tr><td>D-001</td><td>Run <code>git pull --ff-only</code> immediately after checkout. Generated data should use the current branch schema, not the triggering SHA's old script.</td></tr>
+  <tr><td>D-002</td><td>Fail when <code>origin/${GITHUB_REF_NAME}</code> moves during refresh. A clean rerun beats autostash resurrecting deleted files.</td></tr>
+</table>
+
+<h2>Tradeoffs</h2>
+<table>
+  <tr><th>ID</th><th>Picked over Rejected · Reason</th></tr>
+  <tr><td>T-001</td><td>Fail-fast race guard over <code>git pull --rebase --autostash</code>. Rare rerun is cheaper than conflict recovery in an ephemeral runner.</td></tr>
+</table>
+
+<h2>Reversibility</h2>
+<p>R-001 · <span class="blast-med">medium</span>. Restore the previous commit step if automatic rebase of dirty data is preferred over explicit reruns.</p>
+
+<h2>Definition of done</h2>
+<ul>
+  <li>Fresh workflow runs sync to the branch tip before executing <code>scripts/refresh-x-days.ts</code>.</li>
+  <li>The commit step no longer calls <code>git pull --rebase --autostash</code> with generated data in the worktree.</li>
+  <li><code>pnpm tsx scripts/check-people.ts</code> passes.</li>
+</ul>
+</body>
+</html>
