@@ -95,6 +95,9 @@ export default async function UserPage({
             {u.displayName}
           </Link>
         ))}
+        <Link href="/about" className="px-2 py-2 -my-2 hover:text-nerv-amber focus:text-nerv-amber">
+          about
+        </Link>
         <span className="ml-auto">
           <ThemeToggle />
         </span>
@@ -156,14 +159,26 @@ export default async function UserPage({
               <p className="mt-3 text-[10px] uppercase tracking-widest text-nerv-text/60">
                 x panel hidden for {displayName} — refresh action needs to run for{" "}
                 <code className="text-nerv-text/80">
-                  apps/web/src/data/x-days.{slug}.json
+                  apps/web/src/data/x-days-by-slug.json
                 </code>
               </p>
             )}
 
-            <footer className="mt-8 text-[10px] uppercase tracking-widest text-nerv-text/60">
-              {snapshot.generated_at.slice(0, 10)} ·{" "}
-              {snapshot.generated_at.slice(11, 16)}Z
+            <footer className="mt-8 flex items-center justify-between gap-3 text-[10px] uppercase tracking-widest text-nerv-text/60">
+              <span className="lowercase tracking-normal">
+                last updated : {snapshot.generated_at.slice(0, 10)} ·{" "}
+                {snapshot.generated_at.slice(11, 16)}Z
+              </span>
+              <span className="lowercase tracking-normal text-nerv-text/65">
+                made by{" "}
+                <a href="https://x.com/anishthite" className="underline underline-offset-2 hover:text-nerv-amber focus:text-nerv-amber">
+                  anish
+                </a>{" "}
+                with{" "}
+                <a href="https://spanner.sh" className="underline underline-offset-2 hover:text-nerv-amber focus:text-nerv-amber">
+                  spanner
+                </a>
+              </span>
             </footer>
           </>
         )

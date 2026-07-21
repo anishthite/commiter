@@ -38,7 +38,7 @@ export function ThemeToggle() {
   }
 
   // Use a stable label until hydrated so SSR/CSR match.
-  const label = theme === "dark" ? "[ light ]" : "[ dark ]";
+  const label = theme === "dark" ? "light" : "dark";
 
   return (
     <button

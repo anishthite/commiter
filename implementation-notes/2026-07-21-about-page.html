@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>2026-07-21 — about page</title>
+<meta name="task" content="Add a small About page for the shipping tracker">
+<meta name="date-started" content="2026-07-21">
+<meta name="date-updated" content="2026-07-21">
+<meta name="status" content="shipped">
+<meta name="blast-radius" content="low">
+<meta name="tags" content="about,ui,nextjs">
+<meta name="related" content="2026-06-01-multi-user-summary.html">
+<style>
+  body { font: 14px/1.45 -apple-system, system-ui, sans-serif; max-width: 880px; margin: 1.5rem auto; padding: 0 1rem; color: #111; }
+  h1 { font-size: 20px; margin: 0 0 .25rem; }
+  h2 { font-size: 15px; margin: 1.4rem 0 .4rem; border-bottom: 1px solid #ddd; padding-bottom: .2rem; }
+  table { border-collapse: collapse; width: 100%; margin: .4rem 0 .8rem; }
+  th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; vertical-align: top; }
+  th { background: #f6f6f6; font-weight: 600; }
+  code, pre { font-family: ui-monospace, Menlo, monospace; }
+  code { background: #f1f1f1; padding: 1px 4px; border-radius: 3px; font-size: 12.5px; }
+  ul, ol { margin: .3rem 0 .8rem 1.2rem; padding: 0; }
+  li { margin: .15rem 0; }
+  .blast-low { color: #2a7a2a; }
+  .meta { color: #555; font-size: 12.5px; margin-bottom: .8rem; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 2px 14px; font-size: 13px; margin: .4rem 0 1rem; }
+  .kv b { color: #444; font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>2026-07-21 — About page</h1>
+<p class="meta"><code>main</code> · worktree <code>/Users/anishthite/workspace/commiter</code> · 2026-07-21 · status <b>shipped</b> · blast <span class="blast-low">low</span></p>
+
+<h2>Summary</h2>
+<div class="kv">
+  <b>Goal</b><div>Add a lightweight <code>/about</code> page that explains the tracker.</div>
+  <b>Source</b><div>Use existing README facts: GitHub + X heatmaps, streaks, no database.</div>
+  <b>Surface</b><div><code>/about</code> plus summary/detail header links.</div>
+  <b>Schema</b><div>None.</div>
+  <b>Mobile</b><div>Use existing responsive spacing and tap-target classes.</div>
+  <b>Open Qs</b><div>0.</div>
+</div>
+
+<h2>UI layout</h2>
+<ol>
+  <li><b>Nav</b>: back link to <code>/</code> and existing <code>ThemeToggle</code>.</li>
+  <li><b>Copy</b>: three short lowercase paragraphs matching the app tone.</li>
+  <li><b>Discovery</b>: add <code>/about</code> to the summary header and detail nav.</li>
+</ol>
+
+<h2>Files</h2>
+<table>
+  <tr><th>Path</th><th>Kind</th><th>Delta</th></tr>
+  <tr><td><code>apps/web/src/app/about/page.tsx</code></td><td>new</td><td>Static About page with app explanation and theme toggle.</td></tr>
+  <tr><td><code>apps/web/src/app/page.tsx</code></td><td>touch</td><td>Add <code>[ about ]</code> beside the existing header actions.</td></tr>
+  <tr><td><code>apps/web/src/app/[user]/page.tsx</code></td><td>touch</td><td>Add <code>about</code> to the detail-page nav.</td></tr>
+  <tr><td><code>apps/web/src/app/layout.tsx</code></td><td>touch</td><td>Keep the footer to the author/spanner credit only.</td></tr>
+  <tr><td><code>implementation-notes/INDEX.html</code></td><td>touch</td><td>Index this note.</td></tr>
+</table>
+
+<h2>Decisions</h2>
+<table>
+  <tr><th>ID</th><th>Choice · Rationale</th></tr>
+  <tr><td>D-001</td><td>Ship a static route. The page needs no data fetch, config, or CMS.</td></tr>
+  <tr><td>D-002</td><td>Use the global footer for discovery. Existing pages already render it everywhere.</td></tr>
+  <tr><td>D-003</td><td>Supersedes D-002: use page headers for discovery. User requested header placement.</td></tr>
+</table>
+
+<h2>Tradeoffs</h2>
+<table>
+  <tr><th>ID</th><th>Picked over Rejected · Reason</th></tr>
+  <tr><td>T-001</td><td>Short copy over a full product explainer. The tracker only needs one sentence of intent and two implementation facts.</td></tr>
+</table>
+
+<h2>Reversibility</h2>
+<p>R-001 · <span class="blast-low">low</span>. Delete <code>apps/web/src/app/about/page.tsx</code> and remove the footer link.</p>
+
+<h2>Definition of done</h2>
+<ul>
+  <li><code>/about</code> renders without fetching tracker data.</li>
+  <li>The summary header and detail nav expose <code>/about</code>.</li>
+  <li><code>pnpm typecheck</code> passes.</li>
+</ul>
+</body>
+</html>

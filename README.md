@@ -1,63 +1,69 @@
 # Shipping Tracker
 
-A two-panel dashboard tracking GitHub commits and X posts with heatmaps and streaks. One Next.js app on Vercel. No database.
+Next.js/Vercel dashboard for “did we ship today?” per person. It combines GitHub contributions and X posts, with file-backed data and no database.
 
-Spec: [`PLAN.md`](./PLAN.md) · Decisions: [`implementation-notes/`](./implementation-notes)
+## Run locally
 
----
-
-## Quickstart
+Requires Node 20+ and pnpm 9.
 
 ```bash
 pnpm install
 cp .env.example apps/web/.env.local
+# set GITHUB_TOKEN in apps/web/.env.local
 pnpm dev   # http://localhost:3000
 ```
 
-Set in `apps/web/.env.local`:
+Runtime env:
 
-- `GITHUB_TOKEN` — PAT with `read:user`
-- `GITHUB_LOGIN` — your GitHub handle
-- `X_LOGIN` — *(optional)* your X handle, no `@`. Omit to hide the X panel; the GitHub panel takes the full row.
+- `GITHUB_TOKEN` — required GitHub PAT with `read:user`.
+- `NERV_TZ` — optional timezone; defaults to `America/Los_Angeles`.
 
-The X panel reads from `apps/web/src/data/x-days.json`, refreshed daily by GitHub Action. The repo ships with an empty file — GitHub-only deploys work out of the box.
+No X API key is needed at runtime; the app reads bundled X data.
 
-## How it works
+## App
 
-On each SSR cache miss (~1h), the page pulls:
+- `/` — all tracked people.
+- `/[slug]` — one person’s heatmaps/streaks.
+- `/about` — public explanation.
+- `/join` — add-person GitHub issue form.
+- `/api/snapshot?user=anish&days=365` — JSON snapshot; `days` clamps to 7–365.
 
-- **GitHub** — GraphQL `contributionsCollection` (365-day calendar, includes private contribs with `read:user`).
-- **X / Twitter** — reads `apps/web/src/data/x-days.json`. A daily Action (`.github/workflows/refresh-x-days.yml`) hits [socialdata.tools](https://socialdata.tools), buckets tweets by `NERV_TZ` day, merges, and commits — triggering a Vercel rebuild. The runtime never touches an X API. Malformed or empty JSON hides the panel cleanly.
+A day counts as shipped when GitHub and X both have activity. If X data is missing, that user falls back to GitHub-only.
 
-  **Freshness tradeoff:** bounded by the daily Action + deploy cycle. Today's tweets land in tomorrow's snapshot. Fine for a "did I ship today?" tracker; run `workflow_dispatch` for sub-hour latency.
+## Data
 
-Streak math runs in-memory, server-rendered. The snapshot is also served at `GET /api/snapshot?days=N` (`s-maxage=3600`, SWR 10min).
+- People: `apps/web/src/config/users.json`
+- X day counts: `apps/web/src/data/x-days-by-slug.json`
+- X refresh workflow: `.github/workflows/refresh-x-days.yml`
+- Full spec: `PLAN.md`
+- Decisions: `implementation-notes/`
 
-## Layout
+To add someone, edit `users.json` with handles only, no `@`:
 
+```json
+{
+  "slug": "anish",
+  "displayName": "anish",
+  "githubLogin": "anishthite",
+  "xLogin": "anishthite"
+}
 ```
-apps/web/              Next.js dashboard (Vercel target)
-  src/app/             page.tsx + /api/snapshot route
-  src/lib/             streak.ts · github.ts · twitter.ts · snapshot.ts · heatmap.ts
-  src/lib/nerv/        Panel + Heatmap components
-implementation-notes/  Decision log per task
-PLAN.md                Master spec
+
+## Checks
+
+```bash
+pnpm typecheck
+pnpm tsx scripts/check-people.ts
 ```
 
 ## Deploy
 
-Push to a Vercel project.
+Set Vercel runtime env:
 
-**Required:** `GITHUB_TOKEN`, `GITHUB_LOGIN`
-**Optional:** `X_LOGIN` (enables Twitter panel), `NERV_TZ` (default `America/Los_Angeles`)
-**GitHub Actions secret:** `SOCIALDATA_API_KEY` (workflow-only; runtime never sees it)
+- `GITHUB_TOKEN`
+- `NERV_TZ` optional
 
-## Status
+Set GitHub Actions secrets:
 
-| Item | State |
-|---|---|
-| GitHub heatmap + streak | done |
-| X / Twitter heatmap + streak | done |
-| Nudge mechanism (Cron + push/email) | deferred |
-| Manual `/api/ship` fallback | deferred |
-| Upstash KV for long-term X history | deferred |
+- `SOCIALDATA_API_KEY` for X refresh
+- `VERCEL_DEPLOY_HOOK_URL` optional deploy hook

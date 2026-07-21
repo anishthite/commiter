@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Spec — add-person-issue-flow</title>
+<meta name="task" content="Add an issue-based flow for requesting tracked people">
+<meta name="date-started" content="2026-07-21">
+<meta name="date-updated" content="2026-07-21">
+<meta name="status" content="ready-for-review">
+<meta name="blast-radius" content="medium">
+<meta name="tags" content="roster,nextjs,github-issues,file-based">
+<meta name="related" content="2026-06-01-multi-user-summary.html">
+<style>
+  body { font: 14px/1.45 -apple-system, system-ui, sans-serif; max-width: 880px; margin: 1.5rem auto; padding: 0 1rem; color: #111; }
+  h1 { font-size: 20px; margin: 0 0 .25rem; }
+  h2 { font-size: 15px; margin: 1.4rem 0 .4rem; border-bottom: 1px solid #ddd; padding-bottom: .2rem; }
+  h3 { font-size: 13px; margin: 1rem 0 .3rem; color: #444; text-transform: uppercase; letter-spacing: .04em; }
+  table { border-collapse: collapse; width: 100%; margin: .4rem 0 .8rem; }
+  th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; vertical-align: top; }
+  th { background: #f6f6f6; font-weight: 600; }
+  code, pre { font-family: ui-monospace, Menlo, monospace; }
+  code { background: #f1f1f1; padding: 1px 4px; border-radius: 3px; font-size: 12.5px; }
+  pre { background: #f6f6f6; padding: .55rem .7rem; border-radius: 4px; overflow-x: auto; font-size: 12.5px; line-height: 1.4; }
+  ul, ol { margin: .3rem 0 .8rem 1.2rem; padding: 0; }
+  li { margin: .15rem 0; }
+  .q { border-left: 3px solid #b85c00; background: #fff8ee; padding: .4rem .7rem; margin: .4rem 0; }
+  .q.resolved { border-left-color: #2a7a2a; background: #f1faf1; }
+  .q .id { color: #b85c00; font-weight: 700; }
+  .q.resolved .id { color: #2a7a2a; }
+  .blast-low { color: #2a7a2a; } .blast-med { color: #b85c00; }
+  .meta { color: #555; font-size: 12.5px; margin-bottom: .8rem; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 2px 14px; font-size: 13px; margin: .4rem 0 1rem; }
+  .kv b { color: #444; font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>Add-person issue flow</h1>
+<p class="meta"><code>main</code> · worktree <code>/Users/anishthite/workspace/commiter</code> · 2026-07-21 · status <b>ready-for-review</b> · blast <span class="blast-med">medium</span></p>
+
+<h2>Summary</h2>
+<div class="kv">
+  <b>Goal</b><div>Add <code>/join</code> so people can request tracking through a GitHub issue.</div>
+  <b>Source</b><div><code>apps/web/src/config/users.json</code> remains source of truth; X day data is one sparse slug-keyed JSON blob.</div>
+  <b>Surface</b><div><code>GET /join</code>, <code>.github/ISSUE_TEMPLATE/add-person.yml</code>.</div>
+  <b>Schema</b><div><code>{ slug, displayName, githubLogin, xLogin }</code>; <code>x-days-by-slug.json</code> keyed by <code>slug</code>.</div>
+  <b>Auth</b><div>GitHub issue identity only; no app secrets or write route.</div>
+  <b>Open Qs</b><div>0.</div>
+</div>
+
+<h2>Issue contract</h2>
+<h3>Template fields</h3>
+<pre>.github/ISSUE_TEMPLATE/add-person.yml
+  display_name: string, required
+  github_login: string, required
+  x_login: string, required
+  // no optional fields; one-screen self-add form</pre>
+<h3>Maintainer patch</h3>
+<pre>{
+  "slug": "github-login-lowercase",
+  "displayName": "name",
+  "githubLogin": "github-login",
+  "xLogin": "x-login"
+}</pre>
+
+<h2>Algorithm</h2>
+<ol>
+  <li>User opens <code>/join</code>.</li>
+  <li>User clicks the prefilled GitHub issue-template URL.</li>
+  <li>Maintainer copies fields into <code>apps/web/src/config/users.json</code>.</li>
+  <li>Vercel rebuild shows GitHub data; refresh workflow creates/fills X data for the new slug.</li>
+</ol>
+
+<h2>UI layout</h2>
+<ol>
+  <li><b><code>/join</code></b>: small form asks display/GitHub/X/context, then opens a prefilled GitHub issue.</li>
+  <li><b><code>/</code></b>: keep existing <code>[ add ]</code> link to <code>/join</code>.</li>
+</ol>
+
+<h2>Files</h2>
+<table>
+  <tr><th>Path</th><th>Kind</th><th>Delta</th></tr>
+  <tr><td><code>.github/ISSUE_TEMPLATE/add-person.yml</code></td><td>new</td><td>Collect display name, GitHub handle, and X handle.</td></tr>
+  <tr><td><code>apps/web/src/app/join/page.tsx</code></td><td>new</td><td>Render intro, maintainer snippet, and client prefill form.</td></tr>
+  <tr><td><code>apps/web/src/app/join/JoinIssueForm.tsx</code></td><td>new</td><td>Ask requester fields on the web page and build the prefilled GitHub issue URL.</td></tr>
+  <tr><td><code>apps/web/src/lib/twitter.ts</code></td><td>touch</td><td>Read one <code>x-days-by-slug.json</code> file and treat missing slugs as offline.</td></tr>
+  <tr><td><code>scripts/refresh-x-days.ts</code></td><td>touch</td><td>Read/write one slug-keyed X data file and create missing slug entries on refresh.</td></tr>
+  <tr><td><code>.github/workflows/refresh-x-days.yml</code></td><td>touch</td><td>Stage <code>x-days-by-slug.json</code> after refresh.</td></tr>
+  <tr><td><code>apps/web/src/data/x-days-by-slug.json</code></td><td>new</td><td>Map <code>slug</code> to the existing X day file shape.</td></tr>
+  <tr><td><code>apps/web/src/data/x-days.*.json</code></td><td>delete</td><td>Remove per-slug static-import payloads after migration.</td></tr>
+  <tr><td><code>README.md</code>, <code>PLAN.md</code>, <code>.env.example</code></td><td>touch</td><td>Document issue flow and remove writer-token setup.</td></tr>
+  <tr><td><code>scripts/check-people.ts</code></td><td>new</td><td>Assert roster uniqueness, migrated X data, and issue-template fields.</td></tr>
+</table>
+
+<h2>Decisions</h2>
+<table>
+  <tr><th>ID</th><th>Choice · Rationale</th></tr>
+  <tr><td>D-001</td><td>Use a GitHub issue form over an app write API. File-based roster stays reviewable and needs no new secret.</td></tr>
+  <tr><td>D-002</td><td>Migrate X payloads to one keyed JSON file. Current static imports make every new person a code change.</td></tr>
+  <tr><td>D-003</td><td>Use maintainer-edited <code>users.json</code> for adds. Direct app commits are more machinery than this roster needs.</td></tr>
+  <tr><td>D-004</td><td>Make the issue form self-add only. Three required fields are enough for a roster row.</td></tr>
+  <tr><td>D-005</td><td>Ask only roster fields on <code>/join</code> and pass issue-form IDs as query params. Keeps the GitHub issue reviewed while avoiding duplicate typing.</td></tr>
+</table>
+
+<h2>Deviations</h2>
+<table>
+  <tr><th>ID</th><th>From spec · Did · Reason</th></tr>
+  <tr><td>X-001</td><td>Initial plan used <code>POST /api/people</code>; replaced with GitHub issue template; user requested issue-first flow.</td></tr>
+</table>
+
+<h2>Tradeoffs</h2>
+<table>
+  <tr><th>ID</th><th>Picked over Rejected · Reason</th></tr>
+  <tr><td>T-001</td><td>Issue template over app API. Avoids app-side GitHub write token.</td></tr>
+  <tr><td>T-002</td><td>Manual JSON edit over direct commit. Review beats surprise roster writes.</td></tr>
+  <tr><td>T-003</td><td>Client-built issue URL over server route. No secret, no storage, no backend.</td></tr>
+  <tr><td>T-004</td><td>No explainer after the button over maintainer snippet. Shorter page; docs keep the file-edit details.</td></tr>
+</table>
+
+<h2>Open questions</h2>
+<div class="q resolved"><span class="id">Q-001</span> · Add mechanism. <b>RESOLVED 2026-07-21: open a GitHub issue and keep adds file-based.</b></div>
+
+<h2>Assumptions</h2>
+<ul>
+  <li>A-001 · Maintainer can edit <code>users.json</code>; if wrong, add a PR template or bot later.</li>
+  <li>A-002 · Roster size stays small enough for sequential refresh; if wrong, add bounded parallelism to <code>scripts/refresh-x-days.ts</code>.</li>
+</ul>
+
+<h2>Reversibility</h2>
+<p>R-001 · <span class="blast-med">medium</span>. Delete <code>/join</code> and issue template; restore per-user X JSON imports if the one-file store is unwanted.</p>
+
+<h2>Followups</h2>
+<ul>
+  <li>L-001 · Add a PR-generating bot only if issue-to-JSON copy/paste becomes annoying.</li>
+</ul>
+
+<h2>Definition of done</h2>
+<ul>
+  <li><code>/join</code> asks requester details and opens the prefilled GitHub issue template.</li>
+  <li>Existing users preserve GitHub/X history after X JSON migration.</li>
+  <li><code>pnpm typecheck</code>, <code>pnpm --filter web build</code>, and <code>pnpm tsx scripts/check-people.ts</code> pass.</li>
+</ul>
+</body>
+</html>

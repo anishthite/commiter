@@ -44,7 +44,15 @@ export default async function SummaryPage() {
         <h1 className="text-nerv-amber text-xl sm:text-3xl lowercase font-mono tracking-tight">
           did we ship today?
         </h1>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <Link href="/about" className="text-[10px] uppercase tracking-widest text-nerv-text/70 hover:text-nerv-amber focus:text-nerv-amber px-2 py-2 -my-2">
+            about
+          </Link>
+          <Link href="/join" className="text-[10px] uppercase tracking-widest text-nerv-text/70 hover:text-nerv-amber focus:text-nerv-amber px-2 py-2 -my-2">
+            add yourself
+          </Link>
+          <ThemeToggle />
+        </div>
       </header>
 
       <div className="grid gap-3 sm:gap-4 sm:grid-cols-2">
@@ -54,8 +62,20 @@ export default async function SummaryPage() {
       </div>
 
       {generated && (
-        <footer className="mt-8 text-[10px] uppercase tracking-widest text-nerv-text/60">
-          {generated.slice(0, 10)} · {generated.slice(11, 16)}Z
+        <footer className="mt-8 flex items-center justify-between gap-3 text-[10px] uppercase tracking-widest text-nerv-text/60">
+          <span className="lowercase tracking-normal">
+            last updated : {generated.slice(0, 10)} · {generated.slice(11, 16)}Z
+          </span>
+          <span className="lowercase tracking-normal text-nerv-text/65">
+            made by{" "}
+            <a href="https://x.com/anishthite" className="underline underline-offset-2 hover:text-nerv-amber focus:text-nerv-amber">
+              anish
+            </a>{" "}
+            with{" "}
+            <a href="https://spanner.sh" className="underline underline-offset-2 hover:text-nerv-amber focus:text-nerv-amber">
+              spanner
+            </a>
+          </span>
         </footer>
       )}
     </main>

@@ -97,17 +97,20 @@ export function Heatmap({ days }: { days: Day[] }) {
               {ticks[wi] ?? ""}
             </div>
             {week.map((cell, di) => {
-              const level = cell ? intensity(cell.count) : 0;
+              const backgroundColor = cell
+                ? CELL_COLORS[intensity(cell.count)]
+                : "transparent";
               return (
                 <div
                   key={di}
                   className="relative group"
-                  role="gridcell"
+                  role={cell ? "gridcell" : undefined}
+                  aria-hidden={cell ? undefined : true}
                   style={{ width: CELL_PX, height: CELL_PX }}
                 >
                   <div
                     className="w-full h-full"
-                    style={{ backgroundColor: CELL_COLORS[level] }}
+                    style={{ backgroundColor }}
                   />
                   {cell && (
                     <div

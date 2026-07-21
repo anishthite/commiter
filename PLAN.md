@@ -2,7 +2,7 @@
 
 > _"Patterns blue and orange. Synchronization holding."_
 
-A two-panel MAGI dashboard that tracks daily "did I ship?" output on GitHub and on X. Heatmaps, streaks, NERV chrome. Single Vercel deploy, no database, no second machine.
+A multi-user MAGI dashboard that tracks daily "did I ship?" output on GitHub and on X. Heatmaps, streaks, NERV chrome. Single Vercel deploy, no database, no second machine.
 
 ---
 
@@ -10,7 +10,7 @@ A two-panel MAGI dashboard that tracks daily "did I ship?" output on GitHub and 
 
 Make falling off the wagon visible enough that I don't.
 
-- One screen, two panels (MAGI-01 GitHub, MAGI-02 X).
+- One summary screen plus per-user detail pages (MAGI-01 GitHub, MAGI-02 X).
 - 53×7 contribution heatmap per panel.
 - Current streak, longest streak, today count per panel.
 - All data lives upstream — GitHub + X — and we pull from them on demand.
@@ -34,7 +34,7 @@ Out of scope (deferred):
 │         page.tsx                                               │
 │           getSnapshot(365)                                     │
 │             ├ fetchGithubDays    next:{revalidate:3600}        │
-│             └ fetchTwitterDays   import "./data/x-days.json"   │
+│             └ fetchTwitterDays   import "./data/x-days-by-slug.json" │
 │           computeStreak × 2 + combineDays                      │
 │           render <MagiPanel/> × 2                              │
 │                                                                │
@@ -64,7 +64,7 @@ One upstream fetch (GitHub GraphQL) cached at the Next.js fetch layer for 1 hour
 
 ### X / Twitter — bundled JSON, refreshed daily by GitHub Action
 
-- Render path: `apps/web/src/lib/twitter.ts` does `import xDaysData from "../data/x-days.json"`. No network at request time.
+- Render path: `apps/web/src/lib/twitter.ts` does `import xDaysData from "../data/x-days-by-slug.json"`. No network at request time.
 - Refresh path: `.github/workflows/refresh-x-days.yml` runs nightly (`cron: "0 9 * * *"` ≈ 01:00–02:00 PT), invokes `pnpm tsx scripts/refresh-x-days.ts`, and commits the new counts back to `main`. Vercel rebuild ships the new data.
 - Refresh script: looks up the numeric `user_id` from `https://api.socialdata.tools/twitter/user/{handle}` (cached in the JSON), then paginates `GET /twitter/search?query=from:<handle>%20since:<date>&type=Latest`. Each tweet's `tweet_created_at` is bucketed via `Intl.DateTimeFormat("en-CA", { timeZone: NERV_TZ })` — matches `dateKey()` in `streak.ts` exactly. Incremental runs re-pull the last 2 days to absorb late-arriving tweets; older days are never decremented.
 - Auth: `SOCIALDATA_API_KEY` in GitHub repo secrets. Runtime app never reads it.
@@ -106,7 +106,7 @@ apps/web/
     └── lib/
         ├── streak.ts       # pure math + tz helpers
         ├── github.ts       # GraphQL fetch + buffer/trim
-        ├── twitter.ts      # reads bundled apps/web/src/data/x-days.json
+        ├── twitter.ts      # reads bundled apps/web/src/data/x-days-by-slug.json
         ├── snapshot.ts     # composes everything; returns wire shape
         ├── heatmap.ts      # toWeeksGrid, intensity
         └── nerv/
@@ -118,21 +118,29 @@ No `packages/`. Single-app workspace.
 
 ---
 
-## §6. Environment variables
+## §6. Add people
+
+- `GET /join` links to `.github/ISSUE_TEMPLATE/add-person.yml` on GitHub.
+- The GitHub issue collects `displayName`, `githubLogin`, and `xLogin`.
+- A maintainer adds one row to `apps/web/src/config/users.json`; roster changes stay file-based.
+- New X data is not fetched in the request path; `x-days-by-slug.json` stays sparse until the scheduled refresh writes the new slug.
+
+---
+
+## §7. Environment variables
 
 | Var | Required | Notes |
 |---|---|---|
 | `GITHUB_TOKEN` | **yes** | PAT with `read:user`. Private contribs require it. |
-| `GITHUB_LOGIN` | optional | Defaults to `anishthite`. |
-| `X_LOGIN` | optional | Handle without `@`. If unset, X panel renders empty. |
+| `GITHUB_LOGIN` | optional | Legacy fallback only; roster entries supply handles. |
+| `X_LOGIN` | optional | Legacy refresh-script override only; roster entries supply handles. |
 | `NERV_TZ` | optional | IANA tz. Defaults to `America/Los_Angeles`. |
-| `NERV_PILOT_TOKEN` | optional | Reserved for future cookie-gated dashboard auth. |
 
 Set in `apps/web/.env.local` for dev. Set as Vercel project env vars for prod.
 
 ---
 
-## §7. Followups (deferred, not part of v0)
+## §8. Followups (deferred, not part of v0)
 
 - **L-001** — Manual ship fallback: `POST /api/ship` + an in-dashboard button. Useful when you want to mark "yes I posted" without waiting for the next daily refresh to ship.
 - **L-002** — Nudge mechanism: Vercel Cron at e.g. 18:00 + 23:00 PT hitting an `/api/nudge` route that pings Pushover / Resend / a Slack webhook when today is empty.

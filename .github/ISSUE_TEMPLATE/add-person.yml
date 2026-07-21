@@ -1,0 +1,58 @@
+name: Add a person
+description: Request a new shipping-tracker roster entry
+title: "Add person: "
+labels: ["add-person"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This request was usually prefilled from `/join`.
+        A maintainer applies accepted requests by editing `apps/web/src/config/users.json`.
+
+  - type: input
+    id: display_name
+    attributes:
+      label: Display name
+      description: Short label shown on the dashboard.
+      placeholder: ada
+    validations:
+      required: true
+
+  - type: input
+    id: github_login
+    attributes:
+      label: GitHub username
+      description: Handle only, no @. This becomes the default slug after lowercase cleanup.
+      placeholder: octocat
+    validations:
+      required: true
+
+  - type: input
+    id: x_login
+    attributes:
+      label: X username
+      description: Handle only, no @.
+      placeholder: octocat
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Optional. Consent note, profile link, or anything a maintainer should know.
+      placeholder: "This is me / they asked to be added / relevant profile link..."
+
+  - type: markdown
+    attributes:
+      value: |
+        Maintainer patch shape:
+
+        ```json
+        {
+          "slug": "github-login-lowercase",
+          "displayName": "name",
+          "githubLogin": "github-login",
+          "xLogin": "x-login"
+        }
+        ```

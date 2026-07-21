@@ -30,3 +30,7 @@ out
 # build artifacts
 dist
 *.tsbuildinfo
+
+# local run artifacts
+.playwright-cli/
+output/

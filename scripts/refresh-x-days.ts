@@ -1,10 +1,10 @@
 #!/usr/bin/env tsx
 /**
- * refresh-x-days.ts — incremental refresh of apps/web/src/data/x-days.json.
+ * refresh-x-days.ts — incremental refresh of apps/web/src/data/x-days-by-slug.json.
  *
- * Pulls a user's recent tweets from socialdata.tools, buckets each into a
- * `YYYY-MM-DD` day key in NERV_TZ, merges into the bundled JSON, and writes
- * it back. Designed to be called once a day by .github/workflows/refresh-x-days.yml.
+ * Pulls each user's recent tweets from socialdata.tools, buckets them into
+ * `YYYY-MM-DD` day keys in NERV_TZ, merges into the bundled JSON, and writes
+ * it back. Designed to be called by .github/workflows/refresh-x-days.yml.
  *
  * Inputs (env):
  *   SOCIALDATA_API_KEY   — required. Bearer token for api.socialdata.tools.
@@ -50,6 +50,8 @@ type DataFile = {
   days: Day[];
 };
 
+type DataBySlugFile = Record<string, DataFile>;
+
 type UserLookupResponse = {
   id?: number | string;
   id_str?: string;
@@ -67,8 +69,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const REPO_ROOT = resolve(__dirname, "..");
 const USERS_PATH = resolve(REPO_ROOT, "apps/web/src/config/users.json");
-const dataPathFor = (slug: string): string =>
-  resolve(REPO_ROOT, `apps/web/src/data/x-days.${slug}.json`);
+const DATA_PATH = resolve(REPO_ROOT, "apps/web/src/data/x-days-by-slug.json");
 
 type RosterUser = {
   slug: string;
@@ -282,26 +283,24 @@ async function apiGet<T>(path: string): Promise<T> {
 
 // ----- I/O ------------------------------------------------------------------
 
-async function loadData(dataPath: string): Promise<DataFile> {
-  let raw: string;
-  try {
-    raw = await readFile(dataPath, "utf8");
-  } catch (err) {
-    die(2, `cannot read ${dataPath}: ${err instanceof Error ? err.message : err}`);
+function emptyData(handle: string): DataFile {
+  return {
+    generated_at: "1970-01-01T00:00:00.000Z",
+    user_id: "",
+    handle,
+    bucketed_tz: "",
+    days: [],
+  };
+}
+
+function parseDataFile(path: string, slug: string, v: unknown): DataFile {
+  if (!v || typeof v !== "object") {
+    die(2, `${path}: entry for slug=${slug} must be a JSON object`);
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    die(2, `${dataPath} is not valid JSON: ${err instanceof Error ? err.message : err}`);
-  }
-  if (!parsed || typeof parsed !== "object") {
-    die(2, `${dataPath} must be a JSON object`);
-  }
-  const obj = parsed as Record<string, unknown>;
+  const obj = v as Record<string, unknown>;
   const days = obj.days;
   if (!isValidDayList(days)) {
-    die(2, `${dataPath}: invalid days[] (must be Array<{date:YYYY-MM-DD, count:number}>)`);
+    die(2, `${path}: invalid days[] for slug=${slug} (must be Array<{date:YYYY-MM-DD, count:number}>)`);
   }
   return {
     generated_at: typeof obj.generated_at === "string" ? obj.generated_at : "1970-01-01T00:00:00.000Z",
@@ -312,14 +311,43 @@ async function loadData(dataPath: string): Promise<DataFile> {
   };
 }
 
-async function saveData(dataPath: string, data: DataFile): Promise<void> {
-  const sorted = [...data.days].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  const out: DataFile = { ...data, days: sorted };
+async function loadStore(): Promise<DataBySlugFile> {
+  let raw: string;
+  try {
+    raw = await readFile(DATA_PATH, "utf8");
+  } catch (err) {
+    die(2, `cannot read ${DATA_PATH}: ${err instanceof Error ? err.message : err}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    die(2, `${DATA_PATH} is not valid JSON: ${err instanceof Error ? err.message : err}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    die(2, `${DATA_PATH} must be a slug-keyed JSON object`);
+  }
+  const out: DataBySlugFile = {};
+  for (const [slug, value] of Object.entries(parsed as Record<string, unknown>)) {
+    out[slug] = parseDataFile(DATA_PATH, slug, value);
+  }
+  return out;
+}
+
+async function saveStore(store: DataBySlugFile): Promise<void> {
+  const out: DataBySlugFile = {};
+  for (const slug of Object.keys(store).sort()) {
+    const data = store[slug]!;
+    out[slug] = {
+      ...data,
+      days: [...data.days].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    };
+  }
   const json = JSON.stringify(out, null, 2) + "\n";
   // F8: write-temp-then-rename for atomicity.
-  const tmp = dataPath + ".tmp";
+  const tmp = DATA_PATH + ".tmp";
   await writeFile(tmp, json, "utf8");
-  await rename(tmp, dataPath);
+  await rename(tmp, DATA_PATH);
 }
 
 // ----- main steps -----------------------------------------------------------
@@ -491,11 +519,11 @@ function mergeCounts(
 
 async function processUser(target: { slug: string; handle: string }): Promise<void> {
   const { slug, handle } = target;
-  const dataPath = dataPathFor(slug);
   log(`=== ${slug} (handle=${handle}) ===`);
 
-  const existing = await loadData(dataPath);
-  log(`loaded ${dataPath}: handle=${existing.handle || "(none)"}, days=${existing.days.length}, user_id=${existing.user_id || "(none)"}`);
+  const store = await loadStore();
+  const existing = store[slug] ?? emptyData(handle);
+  log(`loaded ${DATA_PATH}: slug=${slug}, handle=${existing.handle || "(none)"}, days=${existing.days.length}, user_id=${existing.user_id || "(none)"}`);
 
   // Per-user failures THROW (not die/exit) so a transient socialdata error
   // for one user doesn't poison the whole roster's commit step. main()
@@ -523,7 +551,7 @@ async function processUser(target: { slug: string; handle: string }): Promise<vo
     throw new Error(
       `[${slug}] merged days would shrink existing data ` +
         `(${existing.days.length} → ${mergedDays.length}) — refusing to commit. ` +
-        `If this is intentional, clear ${dataPath}'s days[] and re-run.`
+        `If this is intentional, clear ${DATA_PATH}'s ${slug}.days[] and re-run.`
     );
   }
 
@@ -556,7 +584,8 @@ async function processUser(target: { slug: string; handle: string }): Promise<vo
   };
 
   try {
-    await saveData(dataPath, next);
+    store[slug] = next;
+    await saveStore(store);
   } catch (err) {
     throw new Error(`[${slug}] write failed: ${err instanceof Error ? err.message : err}`);
   }

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Implementation Notes — Index</title>
+<style>
+  body { font: 14px/1.5 -apple-system, system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: #f6f6f6; position: sticky; top: 0; }
+  .blast-high { color: #b00020; font-weight: 600; } .blast-med { color: #b85c00; } .blast-low { color: #2a7a2a; }
+  .status-in-progress { color: #b85c00; } .status-shipped { color: #2a7a2a; } .status-planning { color: #1a5fb4; }
+  a { color: #1a5fb4; text-decoration: none; } a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<h1>Implementation Notes — Index</h1>
+<p>One row per task, newest first. Never delete — superseded rows get strikethrough and a <code>[superseded by …]</code> note.</p>
+<table>
+  <thead><tr><th>Date</th><th>Task</th><th>Status</th><th>Blast</th><th>Tags</th><th>Summary</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>2026-07-21</td>
+      <td><a href="2026-07-21-about-page.html">About page</a></td>
+      <td class="status-shipped">shipped</td>
+      <td class="blast-low">low</td>
+      <td>about, ui, nextjs</td>
+      <td>Add <code>/about</code> and a footer link.</td>
+    </tr>
+    <tr>
+      <td>2026-07-21</td>
+      <td><a href="2026-07-21-self-serve-people.html">Self-serve people page</a></td>
+      <td class="status-in-progress">ready-for-review</td>
+      <td class="blast-med">medium</td>
+      <td>roster, nextjs, github-issues</td>
+      <td><code>/join</code> opens an add-person GitHub issue; roster adds stay in <code>users.json</code>.</td>
+    </tr>
+    <tr>
+      <td>2026-06-01</td>
+      <td><a href="2026-06-01-multi-user-summary.html">Multi-user dashboard</a></td>
+      <td class="status-shipped">shipped</td>
+      <td class="blast-med">medium</td>
+      <td>multi-user, roster, mobile</td>
+      <td>Moved <code>/</code> to summary and per-user detail to <code>/[user]</code>.</td>
+    </tr>
+    <tr>
+      <td>2026-05-29</td>
+      <td><a href="2026-05-29-vercel-deploy-hook.html">Vercel deploy hook</a></td>
+      <td class="status-shipped">shipped</td>
+      <td class="blast-med">medium</td>
+      <td>deploy, github-actions</td>
+      <td>Added deploy hook fallback for bot-authored X refresh commits.</td>
+    </tr>
+    <tr>
+      <td>2026-05-29</td>
+      <td><a href="2026-05-29-twitter-syndication-and-ui-polish.html">Twitter syndication + UI polish</a></td>
+      <td class="status-shipped">shipped</td>
+      <td class="blast-med">medium</td>
+      <td>twitter, ui</td>
+      <td>Refined X data source and dashboard presentation.</td>
+    </tr>
+    <tr>
+      <td>2026-05-29</td>
+      <td><a href="2026-05-29-socialdata-migration.html">SocialData migration</a></td>
+      <td class="status-shipped">shipped</td>
+      <td class="blast-med">medium</td>
+      <td>socialdata, x-refresh</td>
+      <td>Moved X refresh to bundled JSON via daily SocialData fetch.</td>
+    </tr>
+    <tr>
+      <td>2026-05-28</td>
+      <td><a href="2026-05-28-stateless-refactor.html">Stateless refactor</a></td>
+      <td class="status-shipped">shipped</td>
+      <td class="blast-med">medium</td>
+      <td>architecture, vercel</td>
+      <td>Replaced DB/Mac ingestor plan with stateless Vercel app.</td>
+    </tr>
+    <tr>
+      <td>2026-05-23</td>
+      <td><a href="2026-05-23-nerv-shipping-tracker.html">NERV shipping tracker</a></td>
+      <td class="status-shipped">shipped</td>
+      <td class="blast-med">medium</td>
+      <td>initial-spec</td>
+      <td>Initial tracker spec.</td>
+    </tr>
+  </tbody>
+</table>
+</body>
+</html>
