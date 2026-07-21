@@ -16,10 +16,10 @@ export default function JoinPage() {
 
       <header className="mb-6">
         <h1 className="text-nerv-amber text-2xl sm:text-3xl lowercase font-mono tracking-tight">
-          add a pilot
+          add yourself
         </h1>
         <p className="mt-2 text-sm text-nerv-text/70 lowercase">
-          fill this out here; we’ll open a prefilled GitHub issue. roster adds stay file-based in users.json.
+          add yourself to the shipping leaderboard
         </p>
       </header>
 
