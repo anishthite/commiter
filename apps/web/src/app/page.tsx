@@ -74,6 +74,10 @@ export default async function SummaryPage() {
             with{" "}
             <a href="https://spanner.sh" className="underline underline-offset-2 hover:text-nerv-amber focus:text-nerv-amber">
               spanner
+            </a>{" "}
+            ·{" "}
+            <a href="https://github.com/anishthite/commiter" className="underline underline-offset-2 hover:text-nerv-amber focus:text-nerv-amber">
+              source
             </a>
           </span>
         </footer>
