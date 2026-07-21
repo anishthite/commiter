@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>2026-07-21 — Subby X one-day backfill</title>
+<meta name="task" content="Backfill Subby X activity for 2026-07-20">
+<meta name="date-started" content="2026-07-21">
+<meta name="date-updated" content="2026-07-21">
+<meta name="status" content="shipped">
+<meta name="blast-radius" content="high">
+<meta name="tags" content="twitter,x-days,backfill,subby">
+<meta name="related" content="2026-05-29-socialdata-migration.html,2026-07-21-subby-tweets-check.html,2026-07-21-anish-x-backfill.html">
+<style>
+  body { font: 14px/1.45 -apple-system, system-ui, sans-serif; max-width: 880px; margin: 1.5rem auto; padding: 0 1rem; color: #111; }
+  h1 { font-size: 20px; margin: 0 0 .25rem; }
+  h2 { font-size: 15px; margin: 1.4rem 0 .4rem; border-bottom: 1px solid #ddd; padding-bottom: .2rem; }
+  table { border-collapse: collapse; width: 100%; margin: .4rem 0 .8rem; }
+  th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; vertical-align: top; }
+  th { background: #f6f6f6; font-weight: 600; }
+  code { font-family: ui-monospace, Menlo, monospace; background: #f1f1f1; padding: 1px 4px; border-radius: 3px; font-size: 12.5px; }
+  ul { margin: .3rem 0 .8rem 1.2rem; padding: 0; }
+  li { margin: .15rem 0; }
+  .blast-high { color: #b00020; font-weight: 600; }
+  .meta { color: #555; font-size: 12.5px; margin-bottom: .8rem; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 2px 14px; font-size: 13px; margin: .4rem 0 1rem; }
+  .kv b { color: #444; font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>Subby X one-day backfill</h1>
+<p class="meta"><code>main</code> · worktree <code>/Users/anishthite/workspace/commiter</code> · 2026-07-21 · status <b>shipped</b> · blast <span class="blast-high">high</span></p>
+
+<h2>Summary</h2>
+<div class="kv">
+  <b>Goal</b><div>Add the missing <code>2026-07-20</code> X ship-day for <code>subby</code>.</div>
+  <b>Source</b><div>User request plus existing binary <code>count &gt;= 1</code> semantics.</div>
+  <b>Surface</b><div><code>/subby</code> X panel and combined streak.</div>
+  <b>Schema</b><div>None; existing <code>{date,count}</code> row.</div>
+  <b>Verification</b><div><code>jq</code> uniqueness/sort check and <code>pnpm typecheck</code>.</div>
+  <b>Open Qs</b><div>0.</div>
+</div>
+
+<h2>Files</h2>
+<table>
+  <tr><th>Path</th><th>Kind</th><th>Delta</th></tr>
+  <tr><td><code>apps/web/src/data/x-days-by-slug.json</code></td><td>touch</td><td>Add <code>{"date":"2026-07-20","count":1}</code> under <code>subby.days</code> and refresh <code>subby.generated_at</code>.</td></tr>
+  <tr><td><code>implementation-notes/2026-07-21-subby-x-backfill.html</code></td><td>new</td><td>Record manual backfill rationale.</td></tr>
+  <tr><td><code>implementation-notes/INDEX.html</code></td><td>touch</td><td>Add this task row.</td></tr>
+</table>
+
+<h2>Decisions</h2>
+<table>
+  <tr><th>ID</th><th>Choice · Rationale</th></tr>
+  <tr><td>D-001</td><td>Patch one binary row instead of adding tooling. Local secrets do not include <code>SOCIALDATA_API_KEY</code>, and the app only needs <code>count &gt;= 1</code>.</td></tr>
+</table>
+
+<h2>Assumptions</h2>
+<ul>
+  <li>A-001 · The missing activity belongs to <code>subby_tech</code> on <code>2026-07-20</code> in <code>America/Los_Angeles</code>. If wrong: remove the one row.</li>
+</ul>
+
+<h2>Reversibility</h2>
+<p>R-001 · <span class="blast-high">high</span>. Revert by deleting the single <code>2026-07-20</code> row from <code>subby.days</code>.</p>
+
+<h2>Definition of done</h2>
+<ul>
+  <li><code>subby.days</code> contains exactly one <code>2026-07-20</code> row.</li>
+  <li><code>subby.days</code> remains sorted by <code>date</code>.</li>
+  <li><code>pnpm typecheck</code> passes.</li>
+</ul>
+</body>
+</html>
