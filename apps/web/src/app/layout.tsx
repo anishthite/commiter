@@ -1,9 +1,23 @@
 import "./globals.css";
 import type { Metadata } from "next";
 
+const title = "did we ship today?";
+const description = "Shipping tracker — GitHub + X heatmaps and streaks.";
+
 export const metadata: Metadata = {
-  title: "did we ship today?",
-  description: "Shipping tracker — GitHub + X heatmaps and streaks.",
+  title,
+  description,
+  openGraph: {
+    title,
+    description,
+    siteName: title,
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description,
+  },
 };
 
 // Runs before paint to apply the persisted theme. Light is the default

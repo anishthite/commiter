@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>2026-07-21 — Social preview image</title>
+<meta name="task" content="Add a branded link-preview image for the app">
+<meta name="date-started" content="2026-07-21">
+<meta name="date-updated" content="2026-07-21">
+<meta name="status" content="shipped">
+<meta name="blast-radius" content="low">
+<meta name="tags" content="metadata,opengraph,ui,nextjs">
+<meta name="related" content="2026-06-01-multi-user-summary.html,2026-07-21-user-page-typography.html">
+<style>
+  body { font: 14px/1.45 -apple-system, system-ui, sans-serif; max-width: 880px; margin: 1.5rem auto; padding: 0 1rem; color: #111; }
+  h1 { font-size: 20px; margin: 0 0 .25rem; }
+  h2 { font-size: 15px; margin: 1.4rem 0 .4rem; border-bottom: 1px solid #ddd; padding-bottom: .2rem; }
+  table { border-collapse: collapse; width: 100%; margin: .4rem 0 .8rem; }
+  th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; vertical-align: top; }
+  th { background: #f6f6f6; font-weight: 600; }
+  code { font-family: ui-monospace, Menlo, monospace; background: #f1f1f1; padding: 1px 4px; border-radius: 3px; font-size: 12.5px; }
+  ul { margin: .3rem 0 .8rem 1.2rem; padding: 0; }
+  li { margin: .15rem 0; }
+  .blast-low { color: #2a7a2a; }
+  .meta { color: #555; font-size: 12.5px; margin-bottom: .8rem; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 2px 14px; font-size: 13px; margin: .4rem 0 1rem; }
+  .kv b { color: #444; font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>Social preview image</h1>
+<p class="meta"><code>main</code> · worktree <code>/Users/anishthite/workspace/commiter</code> · 2026-07-21 · status <b>shipped</b> · blast <span class="blast-low">low</span></p>
+
+<h2>Summary</h2>
+<div class="kv">
+  <b>Goal</b><div>Add a 1200×630 branded preview image for shared app links.</div>
+  <b>Source</b><div><code>next/og</code> renders the first roster user's current 91-day snapshot to PNG.</div>
+  <b>Surface</b><div><code>/opengraph-image</code> and <code>/twitter-image</code>.</div>
+  <b>Schema</b><div>None.</div>
+  <b>Mobile</b><div>Untouched.</div>
+  <b>Open Qs</b><div>0.</div>
+</div>
+
+<h2>UI layout</h2>
+<ol>
+  <li><b>Hero</b>: reuse the app question and current <code>yes.</code>/<code>no.</code> answer.</li>
+  <li><b>Heatmap</b>: show only <code>last 13 weeks</code> and the actual combined ship-day grid.</li>
+</ol>
+
+<h2>Files</h2>
+<table>
+  <tr><th>Path</th><th>Kind</th><th>Delta</th></tr>
+  <tr><td><code>apps/web/src/app/opengraph-image.tsx</code></td><td>new</td><td>Render the 1200×630 PNG with app colors and an actual 13-week combined heatmap.</td></tr>
+  <tr><td><code>apps/web/src/app/twitter-image.tsx</code></td><td>new</td><td>Reuse the Open Graph renderer for Twitter large-card previews.</td></tr>
+  <tr><td><code>apps/web/src/app/layout.tsx</code></td><td>touch</td><td>Add Open Graph metadata and a Twitter large-card declaration.</td></tr>
+</table>
+
+<h2>Decisions</h2>
+<table>
+  <tr><th>ID</th><th>Choice · Rationale</th></tr>
+  <tr><td>D-001</td><td>Use <code>next/og</code>. It ships with Next and avoids a checked-in binary asset.</td></tr>
+  <tr><td>D-002</td><td>Use a static app-level image. The user asked for a preview image, not per-user live status cards.</td></tr>
+  <tr><td>D-003</td><td>Supersedes D-002: load the first roster user's current snapshot. The heatmap should match real ship days.</td></tr>
+</table>
+
+<h2>Tradeoffs</h2>
+<table>
+  <tr><th>ID</th><th>Picked over Rejected · Reason</th></tr>
+  <tr><td>T-001</td><td><code>/twitter-image</code> re-export over duplicated renderer. Same 1200×630 card works for both surfaces.</td></tr>
+</table>
+
+<h2>Assumptions</h2>
+<ul>
+  <li>A-001 · Preview means social/link preview. If wrong: swap the renderer for the requested in-app preview surface.</li>
+</ul>
+
+<h2>Reversibility</h2>
+<p>R-001 · <span class="blast-low">low</span>. Delete the two metadata image routes and remove the metadata fields from <code>layout.tsx</code>.</p>
+
+<h2>Definition of done</h2>
+<ul>
+  <li><code>pnpm --filter web typecheck</code> passed.</li>
+  <li><code>/opengraph-image</code> and <code>/twitter-image</code> returned 1200×630 PNGs.</li>
+  <li><code>output/previews/social-preview-image.png</code> saved for review.</li>
+</ul>
+</body>
+</html>
